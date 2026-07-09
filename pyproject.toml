@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "xgen-waveform-viewer"
+version = "2.0.0"
+description = "A PyQt6 desktop viewer for real-time ADC waveform data over UART."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [
+    { name = "X-GEN-LAB" },
+]
+dependencies = [
+    "pyqtgraph>=0.13.0",
+    "PyQt6>=6.4.0",
+    "pyserial>=3.5",
+    "numpy>=1.24.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/X-Gen-Lab/xgen-waveform-viewer"
+Repository = "https://github.com/X-Gen-Lab/xgen-waveform-viewer"
+
+[project.scripts]
+xgen-waveform-viewer = "xgen_waveform_viewer.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
