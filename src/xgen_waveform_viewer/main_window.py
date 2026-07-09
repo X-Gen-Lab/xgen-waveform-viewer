@@ -3,6 +3,7 @@
 整合工具栏、波形显示、数据录制与保存
 """
 
+import json
 import struct
 import time
 from datetime import datetime
@@ -27,14 +28,14 @@ from serial.tools import list_ports
 
 from .config import (
     ADC_SAMPLE_RATE_HZ,
-    FRAME_SAMPLES,
     BIN_MAGIC,
     BIN_VERSION,
     DEFAULT_PORT,
     UART_BAUDRATE,
 )
+from .recorder import FrameRecorder
 from .serial_reader import SerialReader
-from .waveform_widget import WaveformWidget
+from .waveform_widget import MAX_BUFFER_SAMPLES, WaveformWidget
 from .version import APP_TITLE
 
 
@@ -54,12 +55,14 @@ class MainWindow(QMainWindow):
 
         # 录制状态
         self._recording = False
-        self._record_file = None
+        self._recorder: FrameRecorder | None = None
         self._record_frame_count = 0
         self._record_sample_count = 0
         self._record_start_time = 0.0
-        self._record_path = ""       # 预设保存路径 (空=每次弹窗选择)
+        self._record_serial_stats_start = {}
+        self._record_dir: Path | None = None  # 预设保存目录 (空=每次弹窗选择文件)
         self._record_format = "bin"  # bin 或 csv
+        self._max_buffer_samples = MAX_BUFFER_SAMPLES
 
         self._setup_ui()
         self._setup_statusbar()
@@ -143,7 +146,7 @@ class MainWindow(QMainWindow):
 
         # 设置保存路径
         self._btn_set_path = QPushButton("Path...")
-        self._btn_set_path.setToolTip("设置录制文件保存路径 (不设置则每次弹窗选择)")
+        self._btn_set_path.setToolTip("设置录制文件保存目录 (不设置则每次弹窗选择文件)")
         self._btn_set_path.clicked.connect(self._on_set_record_path)
         toolbar.addWidget(self._btn_set_path)
 
@@ -165,7 +168,11 @@ class MainWindow(QMainWindow):
         self._btn_export_csv.clicked.connect(self._export_csv)
         toolbar.addWidget(self._btn_export_csv)
 
-        toolbar.addSpacing(16)
+        toolbar.addStretch()
+        root_layout.addLayout(toolbar)
+
+        toolbar = QHBoxLayout()
+        toolbar.setSpacing(8)
 
         # ── X 轴控制 ──
         toolbar.addWidget(QLabel("X:"))
@@ -182,7 +189,7 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(self._x_window_combo)
 
         self._x_span_spin = QDoubleSpinBox()
-        self._x_span_spin.setRange(0.001, 120.0)
+        self._x_span_spin.setRange(0.001, self._max_x_window_seconds())
         self._x_span_spin.setDecimals(3)
         self._x_span_spin.setSingleStep(0.1)
         self._x_span_spin.setSuffix(" s")
@@ -216,6 +223,18 @@ class MainWindow(QMainWindow):
         self._btn_x_all.setToolTip("显示当前缓冲区全部时间范围")
         self._btn_x_all.clicked.connect(self._on_x_all_clicked)
         toolbar.addWidget(self._btn_x_all)
+
+        toolbar.addWidget(QLabel("Buf:"))
+        self._buffer_limit_spin = QDoubleSpinBox()
+        self._buffer_limit_spin.setRange(0.01, 100.0)
+        self._buffer_limit_spin.setDecimals(2)
+        self._buffer_limit_spin.setSingleStep(1.0)
+        self._buffer_limit_spin.setSuffix(" Mpts")
+        self._buffer_limit_spin.setValue(self._max_buffer_samples / 1_000_000)
+        self._buffer_limit_spin.setMinimumWidth(92)
+        self._buffer_limit_spin.setToolTip("显示缓冲区最大采样点数，单位为百万点")
+        self._buffer_limit_spin.valueChanged.connect(self._on_buffer_limit_changed)
+        toolbar.addWidget(self._buffer_limit_spin)
 
         toolbar.addSpacing(16)
 
@@ -261,6 +280,7 @@ class MainWindow(QMainWindow):
 
         # 波形组件
         self._waveform = WaveformWidget()
+        self._waveform.set_max_buffer_samples(self._max_buffer_samples)
         root_layout.addWidget(self._waveform)
 
     def _setup_statusbar(self):
@@ -377,14 +397,33 @@ class MainWindow(QMainWindow):
 
     # ── X 轴控制 ──────────────────────────────────────────
 
-    @staticmethod
-    def _get_x_presets() -> list:
-        return [0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0, 10.0]
+    def _get_x_presets(self) -> list:
+        max_sec = self._max_x_window_seconds()
+        presets = [
+            0.01, 0.05, 0.1, 0.5,
+            1.0, 2.0, 5.0, 10.0,
+            30.0, 60.0, 120.0, 300.0,
+            600.0, 1800.0, 3600.0, 7200.0,
+            14400.0, 21600.0,
+        ]
+        visible_presets = [sec for sec in presets if sec <= max_sec]
+        if max_sec not in visible_presets:
+            visible_presets.append(max_sec)
+        return visible_presets
+
+    def _max_x_window_seconds(self) -> float:
+        return self._max_buffer_samples / ADC_SAMPLE_RATE_HZ
 
     @staticmethod
     def _fmt_seconds(sec: float) -> str:
         if sec < 1.0:
             return f"{int(sec * 1000)} ms"
+        if sec < 60.0:
+            return f"{sec:g} s"
+        if sec < 3600.0:
+            return f"{sec / 60.0:g} min"
+        if sec % 3600.0 == 0:
+            return f"{sec / 3600.0:g} h"
         return f"{sec:g} s"
 
     def _on_x_window_changed(self, index):
@@ -395,6 +434,32 @@ class MainWindow(QMainWindow):
 
     def _on_x_span_changed(self, value: float):
         self._waveform.set_x_window(value)
+
+    def _on_buffer_limit_changed(self, value: float):
+        self._max_buffer_samples = max(int(round(value * 1_000_000)), 1)
+        self._waveform.set_max_buffer_samples(self._max_buffer_samples)
+        self._refresh_x_window_limit()
+
+    def _refresh_x_window_limit(self):
+        max_sec = self._max_x_window_seconds()
+        self._x_span_spin.setMaximum(max_sec)
+        if self._x_span_spin.value() > max_sec:
+            self._set_x_span_spin(max_sec)
+            self._waveform.set_x_window(max_sec)
+        self._rebuild_x_window_presets()
+
+    def _rebuild_x_window_presets(self):
+        current = self._x_span_spin.value()
+        self._x_window_combo.blockSignals(True)
+        self._x_window_combo.clear()
+        for sec in self._get_x_presets():
+            self._x_window_combo.addItem(self._fmt_seconds(sec), sec)
+        idx = self._x_window_combo.findData(current)
+        if idx >= 0:
+            self._x_window_combo.setCurrentIndex(idx)
+        else:
+            self._x_window_combo.setCurrentIndex(-1)
+        self._x_window_combo.blockSignals(False)
 
     def _x_zoom(self, direction: int):
         """direction: +1=缩小(更长时间), -1=放大(更短时间)"""
@@ -420,24 +485,7 @@ class MainWindow(QMainWindow):
     # ── 数据接收 ───────────────────────────────────────────
 
     def _on_frame_ready(self, samples: np.ndarray, seq: int):
-        self._waveform.append_frame(samples)
-
-        # 录制时写入文件
-        if self._recording and self._record_file:
-            samples_count = len(samples)
-            if self._record_format == "csv":
-                # CSV: 每行一个采样点: time_s,adc_value
-                base_t = self._record_sample_count / ADC_SAMPLE_RATE_HZ
-                for i in range(samples_count):
-                    t = base_t + i / ADC_SAMPLE_RATE_HZ
-                    self._record_file.write(f"{t:.8f},{samples[i]}\n")
-            else:
-                # BIN v2: [seq(4B LE)][cnt(2B LE)][samples(cnt*2B)]
-                self._record_file.write(struct.pack("<I", seq))
-                self._record_file.write(struct.pack("<H", samples_count))
-                self._record_file.write(samples.tobytes())
-            self._record_frame_count += 1
-            self._record_sample_count += samples_count
+        self._waveform.append_frame(samples, seq)
 
     def _on_stats_updated(self, fps: float, sample_rate_hz: float, frame_count: int, crc_errors: int, seq_gaps: int, resync_count: int, short_frames: int):
         self._waveform.update_stats(fps, sample_rate_hz, frame_count, crc_errors, seq_gaps, resync_count, short_frames)
@@ -452,19 +500,12 @@ class MainWindow(QMainWindow):
         self._record_format = text.lower()
 
     def _on_set_record_path(self):
-        """预设录制文件保存路径"""
-        ext = self._record_format
-        if ext == "csv":
-            filter_str = "CSV Files (*.csv)"
-        else:
-            filter_str = "Binary Files (*.bin)"
-        default_name = f"adc_record_{datetime.now():%Y%m%d_%H%M%S}.{ext}"
-        path, _ = QFileDialog.getSaveFileName(self, "设置录制保存路径",
-                                              str(Path.home() / default_name), filter_str)
+        """预设录制文件保存目录；每次录制自动生成新文件名。"""
+        path = QFileDialog.getExistingDirectory(self, "设置录制保存目录", str(Path.home()))
         if path:
-            self._record_path = path
-            self._btn_set_path.setText(f"Path: ...{Path(path).name[-20:]}")
-            self._btn_set_path.setToolTip(path)
+            self._record_dir = Path(path)
+            self._btn_set_path.setText(f"Dir: ...{self._record_dir.name[-20:]}")
+            self._btn_set_path.setToolTip(str(self._record_dir))
 
     def _toggle_record(self):
         if self._recording:
@@ -474,77 +515,86 @@ class MainWindow(QMainWindow):
 
     def _start_record(self):
         ext = self._record_format
+        default_name = f"adc_record_{datetime.now():%Y%m%d_%H%M%S}.{ext}"
         # 获取保存路径
-        if self._record_path:
-            path = self._record_path
+        if self._record_dir:
+            path = str(self._record_dir / default_name)
         else:
             if ext == "csv":
                 filter_str = "CSV Files (*.csv)"
             else:
                 filter_str = "Binary Files (*.bin)"
-            default_name = f"adc_record_{datetime.now():%Y%m%d_%H%M%S}.{ext}"
             path, _ = QFileDialog.getSaveFileName(self, "选择录制文件",
                                                   str(Path.home() / default_name), filter_str)
             if not path:
                 return
 
         try:
-            if ext == "csv":
-                self._record_file = open(path, "w", encoding="utf-8")
-                # CSV 文件头
-                self._record_file.write(f"# ADC Waveform Recording\n")
-                self._record_file.write(f"# sample_rate={ADC_SAMPLE_RATE_HZ}Hz\n")
-                self._record_file.write(f"# frame_samples=dynamic\n")
-                self._record_file.write(f"# format=uint16\n")
-                self._record_file.write(f"# start_time={datetime.now().isoformat()}\n")
-                self._record_file.write(f"# time_s,adc_value\n")
-            else:
-                self._record_file = open(path, "wb")
-                # BIN 文件头: magic(4) + version(4) + frame_count(4) + sample_rate(4) + frame_samples(4) + timestamp(8) = 28 bytes
-                header = struct.pack(
-                    "<4sIIIIq",
-                    BIN_MAGIC,
-                    BIN_VERSION,
-                    0,  # frame_count placeholder
-                    ADC_SAMPLE_RATE_HZ,
-                    0,  # dynamic frame_samples; each BIN v2 frame stores its own cnt
-                    int(time.time()),
-                )
-                self._record_file.write(header)
-        except OSError as e:
+            self._recorder = FrameRecorder(path, ext, ADC_SAMPLE_RATE_HZ)
+            self._recorder.start()
+        except Exception as e:
             QMessageBox.critical(self, "Error", f"无法创建文件: {e}")
+            self._recorder = None
             return
 
+        self._reader.set_record_sink(self._recorder.enqueue)
         self._recording = True
         self._record_frame_count = 0
         self._record_sample_count = 0
         self._record_start_time = time.perf_counter()
+        self._record_serial_stats_start = self._reader.get_stats()
         self._btn_record.setText("Stop")
         self._btn_record.setStyleSheet("background-color: #c00; color: white;")
+        self._record_fmt_combo.setEnabled(False)
+        self._btn_set_path.setEnabled(False)
         self._status_label.setText(f"REC [{ext.upper()}]: {Path(path).name}")
 
     def _stop_record(self):
-        if self._record_file:
-            if self._record_format == "bin":
-                # 更新 BIN 文件头中的帧数 (offset 8, uint32)
-                self._record_file.seek(8)
-                self._record_file.write(struct.pack("<I", self._record_frame_count))
-            self._record_file.close()
-            self._record_file = None
+        self._reader.set_record_sink(None)
+        stats = None
+        if self._recorder:
+            self._status_label.setText("Stopping REC: flushing queued frames...")
+            stats = self._recorder.stop(self._record_serial_stats_delta())
+            self._recorder = None
 
-        elapsed = time.perf_counter() - self._record_start_time
-        total_samples = self._record_sample_count
+        elapsed = stats.elapsed_s if stats else time.perf_counter() - self._record_start_time
+        self._record_frame_count = stats.frame_count if stats else self._record_frame_count
+        self._record_sample_count = stats.sample_count if stats else self._record_sample_count
         self._recording = False
         self._btn_record.setText("Record")
         self._btn_record.setStyleSheet("")
-        self._status_label.setText(
-            f"Saved {self._record_frame_count} frames ({total_samples} samples) in {elapsed:.1f}s"
-        )
+        self._record_fmt_combo.setEnabled(True)
+        self._btn_set_path.setEnabled(True)
+        total_samples = self._record_sample_count
+        if stats and not stats.complete:
+            self._status_label.setText(
+                f"Saved with warnings: {self._record_frame_count} frames ({total_samples} samples) in {elapsed:.1f}s"
+            )
+            QMessageBox.warning(
+                self,
+                "Recording Warning",
+                "录制已保存，但检测到完整性风险。\n"
+                f"文件: {stats.path}\n"
+                f"SeqGap: {stats.seq_gap_count}, QueueDrop: {stats.queue_drop_count}\n"
+                f"串口统计: {stats.serial_stats}\n"
+                f"详情见: {stats.path}.meta.json",
+            )
+        else:
+            self._status_label.setText(
+                f"Saved {self._record_frame_count} frames ({total_samples} samples) in {elapsed:.1f}s"
+            )
+
+    def _record_serial_stats_delta(self) -> dict:
+        current = self._reader.get_stats()
+        return {
+            key: current.get(key, 0) - self._record_serial_stats_start.get(key, 0)
+            for key in current
+        }
 
     # ── 保存/导出 ──────────────────────────────────────────
 
     def _save_buffer(self):
-        """保存当前显示缓冲区数据为 .bin 文件"""
+        """保存当前显示缓冲区数据为与 Record 一致的 BIN v2 文件"""
         path, _ = QFileDialog.getSaveFileName(
             self,
             "保存缓冲区数据",
@@ -554,28 +604,40 @@ class MainWindow(QMainWindow):
         if not path:
             return
 
-        data = self._waveform.get_buffer_data()
+        snapshot = self._waveform.get_buffer_snapshot()
+        if len(snapshot.data) == 0:
+            QMessageBox.information(self, "No Data", "当前缓冲区没有可保存的数据")
+            return
+        if not snapshot.frames:
+            QMessageBox.warning(self, "No Frame Metadata", "当前缓冲区缺少帧序号信息，无法保存为统一 BIN v2 格式")
+            return
+
         try:
             with open(path, "wb") as f:
-                frame_count = len(data) // FRAME_SAMPLES
-                # 文件头: magic(4) + version(4) + frame_count(4) + sample_rate(4) + frame_samples(4) + timestamp(8) = 28 bytes
                 header = struct.pack(
                     "<4sIIIIq",
                     BIN_MAGIC,
                     BIN_VERSION,
-                    frame_count,
-                    ADC_SAMPLE_RATE_HZ,
-                    FRAME_SAMPLES,
+                    len(snapshot.frames),
+                    int(round(snapshot.sample_rate_hz)),
+                    0,
                     int(time.time()),
                 )
                 f.write(header)
-                f.write(data.tobytes())
-            QMessageBox.information(self, "Saved", f"已保存 {len(data)} 个采样点到:\n{path}")
+                for frame in snapshot.frames:
+                    f.write(struct.pack("<IH", frame.seq, len(frame.samples)))
+                    f.write(frame.samples.tobytes())
+            self._write_buffer_metadata(path, snapshot)
+            QMessageBox.information(
+                self,
+                "Saved",
+                f"已保存 {len(snapshot.frames)} 帧 / {len(snapshot.data)} 个采样点到:\n{path}",
+            )
         except OSError as e:
             QMessageBox.critical(self, "Error", f"保存失败: {e}")
 
     def _export_csv(self):
-        """导出缓冲区数据为 CSV"""
+        """导出缓冲区数据为 CSV，包含真实样本索引、时间和帧序号"""
         path, _ = QFileDialog.getSaveFileName(
             self,
             "导出 CSV",
@@ -585,17 +647,56 @@ class MainWindow(QMainWindow):
         if not path:
             return
 
-        data = self._waveform.get_buffer_data()
+        snapshot = self._waveform.get_buffer_snapshot()
+        if len(snapshot.data) == 0:
+            QMessageBox.information(self, "No Data", "当前缓冲区没有可导出的数据")
+            return
+
         try:
-            t = np.arange(len(data), dtype=np.float64) / ADC_SAMPLE_RATE_HZ
-            header_line = f"# sample_rate={ADC_SAMPLE_RATE_HZ}Hz, samples={len(data)}\n# time_s,adc_value\n"
-            with open(path, "w") as f:
-                f.write(header_line)
-                for i in range(len(data)):
-                    f.write(f"{t[i]:.8f},{data[i]}\n")
-            QMessageBox.information(self, "Exported", f"已导出 {len(data)} 个采样点到:\n{path}")
+            with open(path, "w", encoding="utf-8", newline="") as f:
+                f.write("# source=display_buffer\n")
+                f.write(f"# sample_rate={snapshot.sample_rate_hz:.6f}Hz\n")
+                f.write(f"# samples={len(snapshot.data)}\n")
+                f.write(f"# first_sample_index={snapshot.first_sample_index}\n")
+                f.write(f"# total_samples_seen={snapshot.total_samples}\n")
+                f.write("# seq,sample_index,time_s,adc_value\n")
+                if snapshot.frames:
+                    for frame in snapshot.frames:
+                        for i, value in enumerate(frame.samples):
+                            sample_index = frame.start_sample_index + i
+                            t = sample_index / snapshot.sample_rate_hz
+                            f.write(f"{frame.seq},{sample_index},{t:.8f},{int(value)}\n")
+                else:
+                    for i, value in enumerate(snapshot.data):
+                        sample_index = snapshot.first_sample_index + i
+                        t = sample_index / snapshot.sample_rate_hz
+                        f.write(f",{sample_index},{t:.8f},{int(value)}\n")
+            QMessageBox.information(self, "Exported", f"已导出 {len(snapshot.data)} 个采样点到:\n{path}")
         except OSError as e:
             QMessageBox.critical(self, "Error", f"导出失败: {e}")
+
+    @staticmethod
+    def _write_buffer_metadata(path: str, snapshot):
+        frames = snapshot.frames
+        metadata = {
+            "source": "display_buffer",
+            "format": "bin",
+            "bin_version": BIN_VERSION,
+            "frame_layout": "header + repeated [seq:uint32_le][cnt:uint16_le][samples:uint16_le...]",
+            "path": str(path),
+            "sample_rate_hz": snapshot.sample_rate_hz,
+            "frame_count": len(frames),
+            "sample_count": len(snapshot.data),
+            "first_sample_index": snapshot.first_sample_index,
+            "last_sample_index": snapshot.first_sample_index + len(snapshot.data) - 1,
+            "total_samples_seen": snapshot.total_samples,
+            "first_seq": frames[0].seq if frames else None,
+            "last_seq": frames[-1].seq if frames else None,
+            "complete": False,
+            "note": "This is a display buffer export, not a full recording.",
+        }
+        metadata_path = Path(path).with_suffix(Path(path).suffix + ".meta.json")
+        metadata_path.write_text(json.dumps(metadata, indent=2, ensure_ascii=False), encoding="utf-8")
 
     # ── 事件 ──────────────────────────────────────────────
 

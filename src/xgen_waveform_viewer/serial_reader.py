@@ -13,6 +13,8 @@
 
 import time
 import struct
+import threading
+from collections.abc import Callable
 import numpy as np
 import serial
 from PyQt6.QtCore import QThread, pyqtSignal
@@ -71,6 +73,8 @@ class SerialReader(QThread):
         self._databits = serial.EIGHTBITS
         self._stopbits = serial.STOPBITS_ONE
         self._parity = serial.PARITY_NONE
+        self._record_sink: Callable[[int, np.ndarray], None] | None = None
+        self._record_sink_lock = threading.Lock()
 
         # 统计
         self._frame_count = 0
@@ -96,6 +100,15 @@ class SerialReader(QThread):
         self._databits = databits
         self._stopbits = stopbits
         self._parity = parity
+
+    def set_record_sink(self, sink: Callable[[int, np.ndarray], None] | None):
+        """Set a thread-safe frame sink used by the recorder.
+
+        The sink is called from the serial reader thread before the GUI signal is
+        emitted, so recording is not delayed by paint/event handling.
+        """
+        with self._record_sink_lock:
+            self._record_sink = sink
 
     def _parse_frame(self, raw: bytes, samples_cnt: int) -> tuple[np.ndarray, int] | None:
         """
@@ -314,6 +327,11 @@ class SerialReader(QThread):
         if self._last_seq >= 0 and seq != (self._last_seq + 1) & 0xFFFFFFFF:
             self._seq_gap_count += 1
         self._last_seq = seq
+
+        with self._record_sink_lock:
+            record_sink = self._record_sink
+        if record_sink is not None:
+            record_sink(seq, samples)
 
         self.frame_ready.emit(samples, seq)
 

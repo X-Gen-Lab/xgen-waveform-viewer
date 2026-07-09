@@ -5,6 +5,8 @@ X 轴: 自动滚动 / 手动缩放平移 / 滚轮缩放
 Y 轴: 自适应 / 固定 uint16 全范围
 """
 
+from dataclasses import dataclass
+
 import numpy as np
 import pyqtgraph as pg
 from PyQt6.QtWidgets import QVBoxLayout, QWidget, QHBoxLayout, QLabel
@@ -19,10 +21,26 @@ X_WINDOW_DEFAULT = 2.0
 PLOT_REFRESH_MS = 33
 MIN_EFFECTIVE_SAMPLE_RATE_HZ = 1.0
 BUFFER_HEADROOM = 1.25
-MAX_BUFFER_SAMPLES = 1_000_000
+MAX_BUFFER_SAMPLES = 10_000_000
 FOLLOW_RIGHT_PADDING_RATIO = 0.06
 Y_MANUAL_MIN_DEFAULT = 0.0
 Y_MANUAL_MAX_DEFAULT = 1200.0
+
+
+@dataclass
+class BufferFrame:
+    seq: int
+    start_sample_index: int
+    samples: np.ndarray
+
+
+@dataclass
+class BufferSnapshot:
+    data: np.ndarray
+    frames: list[BufferFrame]
+    first_sample_index: int
+    total_samples: int
+    sample_rate_hz: float
 
 
 class WaveformWidget(QWidget):
@@ -35,6 +53,8 @@ class WaveformWidget(QWidget):
         self._buffer = np.zeros(DISPLAY_BUFFER_SIZE, dtype=np.uint16)
         self._write_pos = 0
         self._total_samples = 0
+        self._frame_history: list[BufferFrame] = []
+        self._max_buffer_samples = MAX_BUFFER_SAMPLES
         self._effective_sample_rate_hz = float(ADC_SAMPLE_RATE_HZ)
         self._plot_dirty = False
 
@@ -360,18 +380,20 @@ class WaveformWidget(QWidget):
 
     # ── 数据 ──────────────────────────────────────────────
 
-    def append_frame(self, samples: np.ndarray):
+    def append_frame(self, samples: np.ndarray, seq: int | None = None):
         """添加一帧采样数据"""
         n = len(samples)
         if n == 0:
             return
 
+        start_sample_index = self._total_samples
         self._ensure_buffer_capacity(incoming_samples=n)
         buf_len = len(self._buffer)
         if n >= buf_len:
             self._buffer[:] = samples[-buf_len:]
             self._write_pos = 0
             self._total_samples += n
+            self._append_frame_history(seq, start_sample_index, samples)
             self._update_plot()
             return
 
@@ -386,8 +408,33 @@ class WaveformWidget(QWidget):
 
         self._write_pos = end_pos % buf_len
         self._total_samples += n
+        self._append_frame_history(seq, start_sample_index, samples)
 
         self._plot_dirty = True
+
+    def _append_frame_history(self, seq: int | None, start_sample_index: int, samples: np.ndarray):
+        if seq is None:
+            self._trim_frame_history()
+            return
+
+        self._frame_history.append(BufferFrame(int(seq), start_sample_index, samples.copy()))
+        self._trim_frame_history()
+
+    def _trim_frame_history(self):
+        first_sample_index = max(0, self._total_samples - self._data_len())
+        trimmed: list[BufferFrame] = []
+        for frame in self._frame_history:
+            frame_end = frame.start_sample_index + len(frame.samples)
+            if frame_end <= first_sample_index:
+                continue
+
+            if frame.start_sample_index < first_sample_index:
+                offset = first_sample_index - frame.start_sample_index
+                trimmed.append(BufferFrame(frame.seq, first_sample_index, frame.samples[offset:].copy()))
+            else:
+                trimmed.append(frame)
+
+        self._frame_history = trimmed
 
     def _flush_plot_update(self):
         if not self._plot_dirty:
@@ -434,13 +481,16 @@ class WaveformWidget(QWidget):
     def _target_buffer_size(self, incoming_samples: int = 0) -> int:
         window_samples = int(self._effective_sample_rate_hz * self._x_window_sec * BUFFER_HEADROOM)
         minimum = max(DISPLAY_BUFFER_SIZE, incoming_samples, 1)
-        return min(max(window_samples, minimum), MAX_BUFFER_SAMPLES)
+        return min(max(window_samples, minimum), self._max_buffer_samples)
 
     def _ensure_buffer_capacity(self, incoming_samples: int = 0):
         target_size = self._target_buffer_size(incoming_samples)
         if target_size <= len(self._buffer):
             return
 
+        self._resize_buffer(target_size)
+
+    def _resize_buffer(self, target_size: int):
         data = self._ordered_buffer_data()
         keep = min(len(data), target_size)
         new_buffer = np.zeros(target_size, dtype=np.uint16)
@@ -449,6 +499,19 @@ class WaveformWidget(QWidget):
 
         self._buffer = new_buffer
         self._write_pos = keep % target_size
+        self._trim_frame_history()
+
+    def set_max_buffer_samples(self, samples: int):
+        self._max_buffer_samples = max(int(samples), DISPLAY_BUFFER_SIZE)
+        max_window_sec = self._max_buffer_samples / self._effective_sample_rate_hz
+        if self._x_window_sec > max_window_sec:
+            self._x_window_sec = max(max_window_sec, 0.001)
+        if len(self._buffer) > self._max_buffer_samples:
+            self._resize_buffer(self._max_buffer_samples)
+        self._plot_dirty = True
+
+    def get_max_buffer_samples(self) -> int:
+        return self._max_buffer_samples
 
     def _update_plot(self):
         """刷新波形显示"""
@@ -556,6 +619,7 @@ class WaveformWidget(QWidget):
         self._buffer = np.zeros(DISPLAY_BUFFER_SIZE, dtype=np.uint16)
         self._write_pos = 0
         self._total_samples = 0
+        self._frame_history = []
         self._effective_sample_rate_hz = float(ADC_SAMPLE_RATE_HZ)
         self._y_auto_fit = True
         self._y_manual_min = Y_MANUAL_MIN_DEFAULT
@@ -584,6 +648,17 @@ class WaveformWidget(QWidget):
     def get_buffer_data(self) -> np.ndarray:
         """获取当前缓冲区中的有序数据 (用于保存)"""
         return self._ordered_buffer_data().copy()
+
+    def get_buffer_snapshot(self) -> BufferSnapshot:
+        data = self._ordered_buffer_data().copy()
+        first_sample_index = max(0, self._total_samples - len(data))
+        return BufferSnapshot(
+            data=data,
+            frames=[BufferFrame(frame.seq, frame.start_sample_index, frame.samples.copy()) for frame in self._frame_history],
+            first_sample_index=first_sample_index,
+            total_samples=self._total_samples,
+            sample_rate_hz=self._effective_sample_rate_hz,
+        )
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
