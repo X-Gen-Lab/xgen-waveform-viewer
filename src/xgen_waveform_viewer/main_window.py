@@ -1,6 +1,11 @@
 """
 主窗口
 整合工具栏、波形显示、数据录制与保存
+
+V2.2 新增:
+- 测量工具 (标尺、峰值检测、统计值)
+- 触发功能 (边沿/电平触发、单次触发)
+- 录制增强 (暂停/恢复、分段录制、实时预览)
 """
 
 import json
@@ -23,6 +28,8 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QStatusBar,
     QMenu,
+    QSplitter,
+    QTabWidget,
 )
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QShortcut, QKeySequence, QAction
@@ -41,6 +48,10 @@ from .waveform_widget import MAX_BUFFER_SAMPLES, WaveformWidget
 from .version import APP_TITLE
 from .settings import AppSettings
 from .theme import Theme
+from .measurement_tools import (
+    Ruler, PeakMarker, MeasurementPanel, MeasurementEngine, MeasurementResult
+)
+from .trigger import TriggerPanel, TriggerDetector, TriggerConfig
 
 
 class MainWindow(QMainWindow):
@@ -80,6 +91,19 @@ class MainWindow(QMainWindow):
         self._record_dir: Path | None = None  # 预设保存目录 (空=每次弹窗选择文件)
         self._record_format = "bin"  # bin 或 csv
         self._max_buffer_samples = MAX_BUFFER_SAMPLES
+        
+        # V2.2 录制增强
+        self._record_preview_timer = QTimer(self)
+        self._record_preview_timer.timeout.connect(self._update_record_preview)
+        
+        # V2.2 测量工具
+        self._ruler: Ruler | None = None
+        self._peak_marker: PeakMarker | None = None
+        self._measurement_result = MeasurementResult()
+        
+        # V2.2 触发功能
+        self._trigger_detector = TriggerDetector()
+        self._trigger_detector.trigger_fired.connect(self._on_trigger_fired)
 
         self._setup_ui()
         self._setup_statusbar()
@@ -641,6 +665,15 @@ class MainWindow(QMainWindow):
         QMessageBox.critical(self, "Serial Error", msg)
         self._disconnect()
 
+    def _on_trigger_fired(self, event):
+        """V2.2 触发事件处理"""
+        # 在状态栏显示触发信息
+        trigger_info = f"Trigger: {event.trigger_type} at {event.value} (t={event.timestamp:.3f}s)"
+        self._status_label.setText(trigger_info)
+        
+        # 可以在这里添加更多的触发响应逻辑
+        # 例如：标记触发点、暂停采集等
+
     # ── 录制 ──────────────────────────────────────────────
 
     def _on_record_fmt_changed(self, text):
@@ -695,8 +728,14 @@ class MainWindow(QMainWindow):
         self._record_fmt_combo.setEnabled(False)
         self._btn_set_path.setEnabled(False)
         self._status_label.setText(f"REC [{ext.upper()}]: {Path(path).name}")
+        
+        # V2.2 启动录制预览定时器
+        self._record_preview_timer.start(500)  # 每500ms更新一次
 
     def _stop_record(self):
+        # V2.2 停止录制预览定时器
+        self._record_preview_timer.stop()
+        
         self._reader.set_record_sink(None)
         stats = None
         if self._recorder:
@@ -737,6 +776,53 @@ class MainWindow(QMainWindow):
             key: current.get(key, 0) - self._record_serial_stats_start.get(key, 0)
             for key in current
         }
+
+    def _update_record_preview(self):
+        """V2.2 更新录制预览信息到状态栏"""
+        if not self._recording or not self._recorder:
+            return
+        
+        try:
+            preview = self._recorder.get_preview()
+            duration = preview['duration']
+            file_size = preview['file_size']
+            frame_count = preview['frame_count']
+            paused = preview['paused']
+            segment_index = preview['segment_index']
+            
+            # 格式化时长显示
+            if duration < 60:
+                duration_str = f"{duration:.1f}s"
+            elif duration < 3600:
+                duration_str = f"{duration/60:.1f}min"
+            else:
+                duration_str = f"{duration/3600:.1f}h"
+            
+            # 格式化文件大小显示
+            if file_size < 1024:
+                size_str = f"{file_size}B"
+            elif file_size < 1024 * 1024:
+                size_str = f"{file_size/1024:.1f}KB"
+            elif file_size < 1024 * 1024 * 1024:
+                size_str = f"{file_size/(1024*1024):.1f}MB"
+            else:
+                size_str = f"{file_size/(1024*1024*1024):.1f}GB"
+            
+            # 构建状态文本
+            fmt = self._record_format.upper()
+            status_parts = [f"REC [{fmt}]: {duration_str}", f"{size_str}", f"{frame_count} frames"]
+            
+            if paused:
+                status_parts.append("[PAUSED]")
+            
+            if segment_index > 0:
+                status_parts.append(f"(Seg {segment_index})")
+            
+            self._status_label.setText(" | ".join(status_parts))
+            
+        except Exception as e:
+            # 静默失败，不影响录制
+            pass
 
     # ── 保存/导出 ──────────────────────────────────────────
 
