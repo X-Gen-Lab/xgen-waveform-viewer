@@ -360,12 +360,48 @@ class MainWindow(QMainWindow):
         self._waveform = WaveformWidget()
         self._waveform.set_max_buffer_samples(self._max_buffer_samples)
         root_layout.addWidget(self._waveform)
+        
+        # V2.4.1: 设置工具面板（测量和触发）
+        self._setup_tool_panels()
 
     def _setup_statusbar(self):
         self._statusbar = QStatusBar()
         self.setStatusBar(self._statusbar)
         self._status_label = QLabel("Disconnected")
         self._statusbar.addPermanentWidget(self._status_label)
+    
+    def _setup_tool_panels(self):
+        """设置工具面板（测量和触发）V2.4.1"""
+        from PyQt6.QtWidgets import QDockWidget
+        
+        # 创建停靠窗口
+        dock = QDockWidget("工具面板", self)
+        dock.setFeatures(
+            QDockWidget.DockWidgetFeature.DockWidgetMovable |
+            QDockWidget.DockWidgetFeature.DockWidgetFloatable |
+            QDockWidget.DockWidgetFeature.DockWidgetClosable
+        )
+        
+        # 创建标签页
+        tabs = QTabWidget()
+        
+        # 测量面板
+        self._measurement_panel = MeasurementPanel()
+        tabs.addTab(self._measurement_panel, "📏 测量")
+        
+        # 触发面板
+        self._trigger_panel = TriggerPanel()
+        self._trigger_panel.config_changed.connect(self._on_trigger_config_changed)
+        tabs.addTab(self._trigger_panel, "⚡ 触发")
+        
+        dock.setWidget(tabs)
+        self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
+        
+        # 默认隐藏（用户可以通过菜单或快捷键打开）
+        dock.hide()
+        
+        # 保存引用以便后续使用
+        self._tool_dock = dock
 
     def _setup_shortcuts(self):
         """设置键盘快捷键"""
@@ -405,6 +441,14 @@ class MainWindow(QMainWindow):
         self._shortcut_zoom_in.activated.connect(lambda: self._x_zoom(-1))
         self._shortcut_zoom_out = QShortcut(QKeySequence("-"), self)
         self._shortcut_zoom_out.activated.connect(lambda: self._x_zoom(1))
+        
+        # V2.4.1: M：切换标尺
+        self._shortcut_ruler = QShortcut(QKeySequence("M"), self)
+        self._shortcut_ruler.activated.connect(self._toggle_ruler)
+        
+        # V2.4.1: P：检测峰值
+        self._shortcut_peaks = QShortcut(QKeySequence("P"), self)
+        self._shortcut_peaks.activated.connect(self._detect_peaks)
 
     def _setup_menu(self):
         """设置菜单栏"""
@@ -486,6 +530,22 @@ class MainWindow(QMainWindow):
         fit_action.setShortcut(QKeySequence("F"))
         fit_action.triggered.connect(self._on_x_all_clicked)
         view_menu.addAction(fit_action)
+        
+        view_menu.addSeparator()
+        
+        # V2.4.1: 工具面板
+        if hasattr(self, '_tool_dock'):
+            toggle_tool_action = self._tool_dock.toggleViewAction()
+            toggle_tool_action.setText("&Tool Panel (Measurement && Trigger)")
+            toggle_tool_action.setShortcut(QKeySequence("Ctrl+T"))
+            view_menu.addAction(toggle_tool_action)
+        
+        # V2.4.1: 统计面板
+        stats_action = QAction("&Statistics Panel", self)
+        stats_action.setShortcut(QKeySequence("Ctrl+I"))
+        stats_action.setToolTip("显示性能和数据完整性统计")
+        stats_action.triggered.connect(self._show_statistics_panel)
+        view_menu.addAction(stats_action)
         
         # 连接菜单
         conn_menu = menubar.addMenu("&Connection")
@@ -814,7 +874,33 @@ class MainWindow(QMainWindow):
         self._record_fmt_combo.setEnabled(True)
         self._btn_set_path.setEnabled(True)
         total_samples = self._record_sample_count
-        if stats and not stats.complete:
+        
+        # V2.4.1: 录制完成后提供快速回放选项
+        if stats and stats.complete and stats.path:
+            self._status_label.setText(
+                f"Saved {self._record_frame_count} frames ({total_samples} samples) in {elapsed:.1f}s"
+            )
+            
+            # 询问是否立即回放
+            reply = QMessageBox.question(
+                self,
+                "录制完成",
+                f"录制成功保存:\n{stats.path}\n\n"
+                f"帧数: {self._record_frame_count:,}\n"
+                f"采样点: {total_samples:,}\n"
+                f"时长: {elapsed:.1f}s\n\n"
+                "是否立即回放？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No
+            )
+            
+            if reply == QMessageBox.StandardButton.Yes:
+                # 打开回放面板并自动加载文件
+                self._show_playback_panel()
+                if self._playback_panel:
+                    # 延迟加载文件，确保面板已完全显示
+                    QTimer.singleShot(200, lambda: self._load_playback_file(stats.path))
+        elif stats and not stats.complete:
             self._status_label.setText(
                 f"Saved with warnings: {self._record_frame_count} frames ({total_samples} samples) in {elapsed:.1f}s"
             )
@@ -831,6 +917,20 @@ class MainWindow(QMainWindow):
             self._status_label.setText(
                 f"Saved {self._record_frame_count} frames ({total_samples} samples) in {elapsed:.1f}s"
             )
+    
+    def _load_playback_file(self, file_path: str):
+        """加载回放文件的辅助方法 V2.4.1"""
+        if self._playback_panel:
+            try:
+                # 直接调用回放面板的加载方法
+                reader = self._playback_panel.get_reader()
+                if reader:
+                    info = reader.load_file(file_path)
+                    self._playback_panel.file_loaded.emit(info)
+                    self._logger.info(f"Auto-loaded playback file: {file_path}", category="playback")
+            except Exception as e:
+                QMessageBox.warning(self, "加载失败", f"无法加载录制文件:\n{str(e)}")
+                self._logger.error(f"Auto-load playback error: {e}", category="playback")
 
     def _record_serial_stats_delta(self) -> dict:
         current = self._reader.get_stats()
@@ -1175,8 +1275,39 @@ class MainWindow(QMainWindow):
     
     # ── V2.4: 导出功能 ──────────────────────────────────────
     
+    def _check_optional_dependency(self, package_name: str, feature_name: str) -> bool:
+        """检查可选依赖是否已安装 V2.4.1"""
+        try:
+            __import__(package_name)
+            return True
+        except ImportError:
+            reply = QMessageBox.question(
+                self,
+                "缺少可选依赖",
+                f"<b>{feature_name}</b> 需要安装 <b>{package_name}</b> 包。\n\n"
+                f"<b>安装方法:</b>\n"
+                f"  方法1: pip install {package_name}\n"
+                f"  方法2: pip install \"xgen-waveform-viewer[full]\"\n\n"
+                f"是否在浏览器中打开安装文档？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.Yes
+            )
+            
+            if reply == QMessageBox.StandardButton.Yes:
+                import webbrowser
+                webbrowser.open(
+                    "https://github.com/X-Gen-Lab/xgen-waveform-viewer#完整功能安装"
+                )
+            return False
+    
     def _export_png(self):
         """导出波形为 PNG 图片"""
+        # V2.4.1: 检查数据
+        snapshot = self._waveform.get_buffer_snapshot()
+        if len(snapshot.data) == 0:
+            QMessageBox.warning(self, "无数据", "当前缓冲区无数据，无法导出")
+            return
+        
         path, _ = QFileDialog.getSaveFileName(
             self,
             "导出为 PNG",
@@ -1186,15 +1317,39 @@ class MainWindow(QMainWindow):
         if not path:
             return
         
-        success = WaveformExporter.export_image_png(self._waveform, path, 1920, 1080)
+        # 显示进度
+        self._status_label.setText("正在导出 PNG 图片...")
+        QApplication.processEvents()
         
-        if success:
-            QMessageBox.information(self, "Success", f"波形已导出到:\n{path}")
-        else:
-            QMessageBox.critical(self, "Error", "导出 PNG 失败")
+        try:
+            success = WaveformExporter.export_image_png(self._waveform, path, 1920, 1080)
+            
+            if success:
+                file_size = Path(path).stat().st_size / 1024
+                QMessageBox.information(
+                    self, "导出成功", 
+                    f"图片已保存:\n{path}\n\n"
+                    f"分辨率: 1920x1080\n"
+                    f"文件大小: {file_size:.1f} KB"
+                )
+                self._status_label.setText(f"PNG 导出成功: {Path(path).name}")
+                self._logger.info(f"PNG export: {path}", category="export")
+            else:
+                QMessageBox.critical(self, "导出失败", "PNG 导出失败，请查看日志")
+                self._status_label.setText("PNG 导出失败")
+        except Exception as e:
+            QMessageBox.critical(self, "导出错误", f"发生错误:\n{str(e)}")
+            self._status_label.setText("PNG 导出错误")
+            self._logger.error(f"PNG export error: {e}", category="export")
     
     def _export_svg(self):
         """导出波形为 SVG 矢量图"""
+        # V2.4.1: 检查数据
+        snapshot = self._waveform.get_buffer_snapshot()
+        if len(snapshot.data) == 0:
+            QMessageBox.warning(self, "无数据", "当前缓冲区无数据，无法导出")
+            return
+        
         path, _ = QFileDialog.getSaveFileName(
             self,
             "导出为 SVG",
@@ -1204,15 +1359,37 @@ class MainWindow(QMainWindow):
         if not path:
             return
         
-        success = WaveformExporter.export_image_svg(self._waveform, path, 1920, 1080)
+        # 显示进度
+        self._status_label.setText("正在导出 SVG 矢量图...")
+        QApplication.processEvents()
         
-        if success:
-            QMessageBox.information(self, "Success", f"波形已导出到:\n{path}")
-        else:
-            QMessageBox.critical(self, "Error", "导出 SVG 失败")
+        try:
+            success = WaveformExporter.export_image_svg(self._waveform, path, 1920, 1080)
+            
+            if success:
+                file_size = Path(path).stat().st_size / 1024
+                QMessageBox.information(
+                    self, "导出成功",
+                    f"矢量图已保存:\n{path}\n\n"
+                    f"格式: SVG (可无损缩放)\n"
+                    f"文件大小: {file_size:.1f} KB"
+                )
+                self._status_label.setText(f"SVG 导出成功: {Path(path).name}")
+                self._logger.info(f"SVG export: {path}", category="export")
+            else:
+                QMessageBox.critical(self, "导出失败", "SVG 导出失败")
+                self._status_label.setText("SVG 导出失败")
+        except Exception as e:
+            QMessageBox.critical(self, "导出错误", f"发生错误:\n{str(e)}")
+            self._status_label.setText("SVG 导出错误")
+            self._logger.error(f"SVG export error: {e}", category="export")
     
     def _export_matlab(self):
         """导出数据为 MATLAB .mat 格式"""
+        # V2.4.1: 检查依赖
+        if not self._check_optional_dependency("scipy", "MATLAB 格式导出"):
+            return
+        
         path, _ = QFileDialog.getSaveFileName(
             self,
             "导出为 MATLAB",
@@ -1227,34 +1404,51 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "No Data", "当前缓冲区没有可导出的数据")
             return
         
+        # 显示进度
+        self._status_label.setText("正在导出 MATLAB 格式...")
+        QApplication.processEvents()
+        
         metadata = {
             'first_sample_index': snapshot.first_sample_index,
             'total_samples_seen': snapshot.total_samples,
             'export_source': 'display_buffer',
         }
         
-        success = WaveformExporter.export_matlab(
-            snapshot.data,
-            path,
-            int(snapshot.sample_rate_hz),
-            metadata
-        )
-        
-        if success:
-            QMessageBox.information(
-                self,
-                "Success",
-                f"已导出 {len(snapshot.data)} 个采样点到 MATLAB 格式:\n{path}"
+        try:
+            success = WaveformExporter.export_matlab(
+                snapshot.data,
+                path,
+                int(snapshot.sample_rate_hz),
+                metadata
             )
-        else:
-            QMessageBox.critical(
-                self,
-                "Error",
-                "导出 MATLAB 格式失败\n请确保已安装 scipy: pip install scipy"
-            )
+            
+            if success:
+                file_size = Path(path).stat().st_size / 1024
+                QMessageBox.information(
+                    self,
+                    "导出成功",
+                    f"已导出 {len(snapshot.data):,} 个采样点到:\n{path}\n\n"
+                    f"文件大小: {file_size:.1f} KB\n\n"
+                    f"在 MATLAB 中使用:\n"
+                    f"  data = load('{Path(path).name}');\n"
+                    f"  plot(data.time, data.samples);"
+                )
+                self._status_label.setText(f"MATLAB 导出成功: {Path(path).name}")
+                self._logger.info(f"MATLAB export: {path}", category="export")
+            else:
+                QMessageBox.critical(self, "导出失败", "MATLAB 格式导出失败")
+                self._status_label.setText("MATLAB 导出失败")
+        except Exception as e:
+            QMessageBox.critical(self, "导出错误", f"发生错误:\n{str(e)}")
+            self._status_label.setText("MATLAB 导出错误")
+            self._logger.error(f"MATLAB export error: {e}", category="export")
     
     def _export_hdf5(self):
         """导出数据为 HDF5 格式"""
+        # V2.4.1: 检查依赖
+        if not self._check_optional_dependency("h5py", "HDF5 格式导出"):
+            return
+        
         path, _ = QFileDialog.getSaveFileName(
             self,
             "导出为 HDF5",
@@ -1269,36 +1463,66 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "No Data", "当前缓冲区没有可导出的数据")
             return
         
+        # V2.4.1: 显示进度对话框（大文件）
+        from PyQt6.QtWidgets import QProgressDialog
+        progress = QProgressDialog("正在导出 HDF5 格式（带压缩）...", None, 0, 0, self)
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setCancelButton(None)
+        progress.show()
+        QApplication.processEvents()
+        
         metadata = {
             'first_sample_index': snapshot.first_sample_index,
             'total_samples_seen': snapshot.total_samples,
             'export_source': 'display_buffer',
         }
         
-        success = WaveformExporter.export_hdf5(
-            snapshot.data,
-            path,
-            int(snapshot.sample_rate_hz),
-            metadata,
-            compression=True
-        )
-        
-        if success:
-            QMessageBox.information(
-                self,
-                "Success",
-                f"已导出 {len(snapshot.data)} 个采样点到 HDF5 格式:\n{path}\n"
-                f"文件使用 gzip 压缩，可高效存储大量数据"
+        try:
+            success = WaveformExporter.export_hdf5(
+                snapshot.data,
+                path,
+                int(snapshot.sample_rate_hz),
+                metadata,
+                compression=True
             )
-        else:
-            QMessageBox.critical(
-                self,
-                "Error",
-                "导出 HDF5 格式失败\n请确保已安装 h5py: pip install h5py"
-            )
+            progress.close()
+            
+            if success:
+                file_size = Path(path).stat().st_size / (1024 * 1024)
+                uncompressed_size = len(snapshot.data) * 2 / (1024 * 1024)
+                compression_ratio = (1 - file_size / uncompressed_size) * 100
+                
+                QMessageBox.information(
+                    self,
+                    "导出成功",
+                    f"已导出 {len(snapshot.data):,} 个采样点到:\n{path}\n\n"
+                    f"未压缩大小: {uncompressed_size:.2f} MB\n"
+                    f"压缩后大小: {file_size:.2f} MB\n"
+                    f"压缩比: {compression_ratio:.1f}%\n\n"
+                    f"在 Python 中使用:\n"
+                    f"  import h5py\n"
+                    f"  with h5py.File('{Path(path).name}', 'r') as f:\n"
+                    f"      samples = f['samples'][:]\n"
+                    f"      rate = f.attrs['sample_rate_hz']"
+                )
+                self._status_label.setText(f"HDF5 导出成功: {Path(path).name}")
+                self._logger.info(f"HDF5 export: {path}", category="export")
+            else:
+                QMessageBox.critical(self, "导出失败", "HDF5 格式导出失败")
+                self._status_label.setText("HDF5 导出失败")
+        except Exception as e:
+            progress.close()
+            QMessageBox.critical(self, "导出错误", f"发生错误:\n{str(e)}")
+            self._status_label.setText("HDF5 导出错误")
+            self._logger.error(f"HDF5 export error: {e}", category="export")
     
     def _export_report_html(self):
         """导出统计报告为 HTML"""
+        snapshot = self._waveform.get_buffer_snapshot()
+        if len(snapshot.data) == 0:
+            QMessageBox.information(self, "No Data", "当前缓冲区没有可导出的数据")
+            return
+        
         path, _ = QFileDialog.getSaveFileName(
             self,
             "导出统计报告",
@@ -1308,57 +1532,90 @@ class MainWindow(QMainWindow):
         if not path:
             return
         
-        snapshot = self._waveform.get_buffer_snapshot()
-        if len(snapshot.data) == 0:
-            QMessageBox.information(self, "No Data", "当前缓冲区没有可导出的数据")
-            return
+        # 显示进度
+        self._status_label.setText("正在生成统计报告...")
+        QApplication.processEvents()
         
-        # 计算统计信息
-        stats = {
-            'sample_rate_hz': snapshot.sample_rate_hz,
-            'total_samples': len(snapshot.data),
-            'duration_s': len(snapshot.data) / snapshot.sample_rate_hz,
-            'mean': float(np.mean(snapshot.data)),
-            'rms': float(np.sqrt(np.mean(snapshot.data.astype(float) ** 2))),
-            'max': float(np.max(snapshot.data)),
-            'min': float(np.min(snapshot.data)),
-            'peak_to_peak': float(np.max(snapshot.data) - np.min(snapshot.data)),
-        }
-        
-        # 可选：先导出波形图片
-        image_path = Path(path).with_suffix('.png')
-        WaveformExporter.export_image_png(self._waveform, str(image_path), 1920, 1080)
-        
-        success = WaveformExporter.export_statistics_html(
-            stats,
-            path,
-            waveform_image_path=image_path.name
-        )
-        
-        if success:
-            QMessageBox.information(
-                self,
-                "Success",
-                f"统计报告已导出到:\n{path}\n\n"
-                f"波形图片: {image_path}"
+        try:
+            # 计算统计信息
+            stats = {
+                'sample_rate_hz': snapshot.sample_rate_hz,
+                'total_samples': len(snapshot.data),
+                'duration_s': len(snapshot.data) / snapshot.sample_rate_hz,
+                'mean': float(np.mean(snapshot.data)),
+                'rms': float(np.sqrt(np.mean(snapshot.data.astype(float) ** 2))),
+                'max': float(np.max(snapshot.data)),
+                'min': float(np.min(snapshot.data)),
+                'peak_to_peak': float(np.max(snapshot.data) - np.min(snapshot.data)),
+            }
+            
+            # 添加串口统计（如果有）
+            if self._reader:
+                serial_stats = self._reader.get_stats()
+                if serial_stats:
+                    stats.update({
+                        'crc_errors': serial_stats.get('crc_errors', 0),
+                        'seq_gaps': serial_stats.get('seq_gaps', 0),
+                        'resyncs': serial_stats.get('resync_count', 0),
+                        'short_frames': serial_stats.get('short_frames', 0),
+                    })
+            
+            # 先导出波形图片
+            image_path = Path(path).with_suffix('.png')
+            WaveformExporter.export_image_png(self._waveform, str(image_path), 1920, 1080)
+            
+            # 生成 HTML 报告
+            success = WaveformExporter.export_statistics_html(
+                stats,
+                path,
+                waveform_image_path=image_path.name
             )
-        else:
-            QMessageBox.critical(self, "Error", "导出报告失败")
+            
+            if success:
+                self._status_label.setText(f"报告导出成功: {Path(path).name}")
+                self._logger.info(f"HTML report export: {path}", category="export")
+                
+                # 询问是否在浏览器中打开
+                reply = QMessageBox.question(
+                    self, "报告生成成功",
+                    f"统计报告已导出到:\n{path}\n\n"
+                    f"波形图片: {image_path}\n\n"
+                    "是否在浏览器中打开？",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.Yes
+                )
+                
+                if reply == QMessageBox.StandardButton.Yes:
+                    import webbrowser
+                    webbrowser.open(f"file:///{Path(path).resolve()}")
+            else:
+                QMessageBox.critical(self, "导出失败", "HTML 报告生成失败")
+                self._status_label.setText("报告导出失败")
+        except Exception as e:
+            QMessageBox.critical(self, "导出错误", f"发生错误:\n{str(e)}")
+            self._status_label.setText("报告导出错误")
+            self._logger.error(f"HTML report export error: {e}", category="export")
     
     # ── V2.4: 回放功能 ──────────────────────────────────────
     
     def _show_playback_panel(self):
         """显示回放控制面板"""
         if self._playback_panel is None:
-            self._playback_panel = PlaybackPanel(self)
+            # 创建回放面板（不设置父窗口，创建独立窗口）
+            self._playback_panel = PlaybackPanel(parent=None)
+            
+            # 连接信号
             self._playback_panel.file_loaded.connect(self._on_playback_file_loaded)
             self._playback_panel.playback_started.connect(self._on_playback_started)
+            self._playback_panel.playback_paused.connect(self._on_playback_paused)
+            self._playback_panel.playback_resumed.connect(self._on_playback_resumed)
             self._playback_panel.playback_stopped.connect(self._on_playback_stopped)
             
-            # 创建浮动窗口
+            # 设置窗口属性
             self._playback_panel.setWindowTitle("数据回放")
-            self._playback_panel.setMinimumWidth(400)
-            self._playback_panel.setMinimumHeight(300)
+            self._playback_panel.setMinimumWidth(450)
+            self._playback_panel.setMinimumHeight(400)
+            self._playback_panel.resize(480, 520)
         
         self._playback_panel.show()
         self._playback_panel.raise_()
@@ -1366,15 +1623,37 @@ class MainWindow(QMainWindow):
     
     def _on_playback_file_loaded(self, info):
         """回放文件加载完成"""
-        self._status_label.setText(f"回放文件已加载: {Path(info.path).name}")
+        msg = (f"已加载: {Path(info.path).name} | "
+               f"格式: {info.format.upper()} | "
+               f"采样率: {info.sample_rate_hz} Hz | "
+               f"时长: {info.duration_s:.2f}s")
+        self._status_label.setText(msg)
+        self._logger.info(f"Playback file loaded: {info.path}", category="playback")
+        
+        # 显示信息对话框
+        QMessageBox.information(
+            self, "文件加载成功",
+            f"文件: {Path(info.path).name}\n"
+            f"格式: {info.format.upper()}\n"
+            f"采样率: {info.sample_rate_hz} Hz\n"
+            f"总帧数: {info.total_frames:,}\n"
+            f"总采样点: {info.total_samples:,}\n"
+            f"时长: {info.duration_s:.2f} 秒"
+        )
     
     def _on_playback_started(self):
         """回放开始"""
         # 进入回放模式
         self._playback_mode = True
         
-        # 禁用串口连接
+        # 禁用串口控件
         self._btn_connect.setEnabled(False)
+        self._port_combo.setEnabled(False)
+        self._baud_combo.setEnabled(False)
+        self._databits_combo.setEnabled(False)
+        self._stopbits_combo.setEnabled(False)
+        self._parity_combo.setEnabled(False)
+        self._btn_record.setEnabled(False)
         
         # 清空当前波形
         self._waveform.clear()
@@ -1384,15 +1663,31 @@ class MainWindow(QMainWindow):
         if reader:
             reader.frame_ready.connect(self._on_frame_ready)
         
-        self._status_label.setText("回放中...")
+        self._status_label.setText("🎬 回放中...")
+        self._logger.info("Playback started", category="playback")
+    
+    def _on_playback_paused(self):
+        """回放暂停"""
+        self._status_label.setText("⏸ 回放已暂停")
+        self._logger.info("Playback paused", category="playback")
+    
+    def _on_playback_resumed(self):
+        """回放恢复"""
+        self._status_label.setText("▶ 回放中...")
+        self._logger.info("Playback resumed", category="playback")
     
     def _on_playback_stopped(self):
         """回放停止"""
         # 退出回放模式
         self._playback_mode = False
         
-        # 恢复串口连接按钮
+        # 恢复串口控件
         self._btn_connect.setEnabled(True)
+        self._set_config_enabled(True)
+        
+        # 如果串口已连接，恢复录制按钮
+        if self._reader.isRunning():
+            self._btn_record.setEnabled(True)
         
         # 断开回放信号
         reader = self._playback_panel.get_reader()
@@ -1402,7 +1697,109 @@ class MainWindow(QMainWindow):
             except:
                 pass
         
-        self._status_label.setText("回放已停止")
+        self._status_label.setText("📡 实时模式 - 回放已停止")
+        self._logger.info("Playback stopped", category="playback")
+    
+    # ── V2.4.1: 测量工具方法 ────────────────────────────────────
+    
+    def _toggle_ruler(self):
+        """切换标尺显示 (快捷键 M)"""
+        if not self._ruler:
+            # 创建标尺
+            self._ruler = Ruler(self._waveform.get_plot_item())
+            self._ruler.measurement_changed.connect(self._on_ruler_measurement_changed)
+            self._status_label.setText("标尺已启用 - 拖动两端测量时间和幅值")
+            self._logger.info("Ruler enabled", category="measurement")
+            
+            # 确保工具面板可见
+            if hasattr(self, '_tool_dock'):
+                self._tool_dock.show()
+        else:
+            # 移除标尺
+            self._ruler.remove()
+            self._ruler = None
+            self._status_label.setText("标尺已禁用")
+            self._logger.info("Ruler disabled", category="measurement")
+    
+    def _detect_peaks(self):
+        """检测并标注峰值 (快捷键 P)"""
+        snapshot = self._waveform.get_buffer_snapshot()
+        if len(snapshot.data) == 0:
+            QMessageBox.warning(self, "无数据", "当前缓冲区无数据，无法检测峰值")
+            return
+        
+        # 创建或更新峰值标记
+        if not self._peak_marker:
+            self._peak_marker = PeakMarker(self._waveform.get_plot_item())
+        
+        # 计算时间数组
+        first_sample_index = snapshot.first_sample_index
+        time = np.arange(len(snapshot.data)) / snapshot.sample_rate_hz + (first_sample_index / snapshot.sample_rate_hz)
+        
+        # 检测峰值
+        threshold = self._settings.get("measurement/peak_threshold", 0.7)
+        min_distance = self._settings.get("measurement/peak_min_distance", 10)
+        
+        try:
+            # detect_peaks返回: (正峰时间, 正峰值, 负峰时间, 负峰值)
+            pos_times, pos_values, neg_times, neg_values = MeasurementEngine.detect_peaks(
+                snapshot.data,
+                time,
+                threshold=threshold,
+                min_distance=min_distance
+            )
+            
+            # 更新标记
+            self._peak_marker.update_peaks(pos_times, pos_values, neg_times, neg_values)
+            
+            # 更新状态栏
+            msg = f"检测到 {len(pos_times)} 个正峰，{len(neg_times)} 个负峰"
+            self._status_label.setText(msg)
+            self._logger.info(msg, category="measurement")
+            
+            # 更新测量面板
+            if hasattr(self, '_measurement_panel'):
+                peaks_dict = {
+                    'positive': {'times': pos_times, 'values': pos_values},
+                    'negative': {'times': neg_times, 'values': neg_values}
+                }
+                self._measurement_panel.update_peak_results(peaks_dict)
+            
+            # 确保工具面板可见
+            if hasattr(self, '_tool_dock'):
+                self._tool_dock.show()
+        except Exception as e:
+            QMessageBox.critical(self, "峰值检测错误", f"检测峰值时发生错误:\n{str(e)}")
+            self._logger.error(f"Peak detection error: {e}", category="measurement")
+    
+    def _on_ruler_measurement_changed(self, result):
+        """标尺测量结果更新"""
+        if hasattr(self, '_measurement_panel'):
+            self._measurement_panel.update_ruler_results(result)
+    
+    def _on_trigger_config_changed(self, config: TriggerConfig):
+        """触发配置变更"""
+        self._trigger_detector.set_config(config)
+        self._logger.info(f"Trigger config updated: mode={config.mode}, type={config.type}", 
+                         category="trigger")
+    
+    def _show_statistics_panel(self):
+        """显示统计面板 (快捷键 Ctrl+I)"""
+        if not self._statistics_panel:
+            self._statistics_panel = StatisticsPanel()
+            self._statistics_panel.setWindowTitle("性能统计")
+            
+            # 连接数据源
+            def update_stats(fps, sr, fc, crc, sg, rs, sf):
+                if self._statistics_panel:
+                    self._statistics_panel.update_statistics(fps, sr, fc, crc, sg, rs, sf)
+            
+            self._reader.stats_updated.connect(update_stats)
+            self._logger.info("Statistics panel opened", category="app")
+        
+        self._statistics_panel.show()
+        self._statistics_panel.raise_()
+        self._statistics_panel.activateWindow()
 
     def closeEvent(self, event):
         self._save_settings()

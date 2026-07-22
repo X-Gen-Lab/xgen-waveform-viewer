@@ -91,53 +91,83 @@ class PlaybackReader(QThread):
     
     def _load_bin(self) -> PlaybackInfo:
         """加载 BIN 格式文件"""
-        with open(self._file_path, "rb") as f:
-            # 读取文件头
-            header = f.read(24)
-            if len(header) < 24:
-                raise ValueError("BIN 文件头不完整")
-            
-            magic, version, frame_count, sample_rate, segment_idx, timestamp = struct.unpack(
-                "<4sIIIIq", header
-            )
-            
-            if magic != BIN_MAGIC:
-                raise ValueError(f"无效的 BIN 文件魔数: {magic}")
-            
-            if version != BIN_VERSION:
-                raise ValueError(f"不支持的 BIN 版本: {version} (期望 {BIN_VERSION})")
-            
-            self._file_format = "bin"
-            self._sample_rate_hz = sample_rate
-            self._bin_total_frames = frame_count
-            
-            # 统计总采样点数（需要遍历文件）
-            total_samples = 0
-            while True:
-                frame_header = f.read(6)  # seq(4) + count(2)
-                if len(frame_header) < 6:
-                    break
-                seq, count = struct.unpack("<IH", frame_header)
-                total_samples += count
-                f.seek(count * 2, 1)  # 跳过数据
-            
-            duration = total_samples / sample_rate if sample_rate > 0 else 0
-            
-            self._info = PlaybackInfo(
-                path=str(self._file_path),
-                format="bin",
-                sample_rate_hz=sample_rate,
-                total_frames=frame_count,
-                total_samples=total_samples,
-                duration_s=duration,
-            )
-            
-            return self._info
+        try:
+            with open(self._file_path, "rb") as f:
+                # 读取文件头
+                header = f.read(24)
+                if len(header) < 24:
+                    raise ValueError("BIN 文件头不完整（需要24字节）")
+                
+                magic, version, frame_count, sample_rate, segment_idx, timestamp = struct.unpack(
+                    "<4sIIIIq", header
+                )
+                
+                if magic != BIN_MAGIC:
+                    raise ValueError(f"无效的 BIN 文件魔数: {magic} (期望 {BIN_MAGIC})")
+                
+                if version != BIN_VERSION:
+                    raise ValueError(f"不支持的 BIN 版本: {version} (期望 {BIN_VERSION})")
+                
+                if sample_rate == 0:
+                    raise ValueError("BIN 文件采样率为0")
+                
+                self._file_format = "bin"
+                self._sample_rate_hz = sample_rate
+                self._bin_total_frames = frame_count
+                
+                # 统计总采样点数（需要遍历文件）
+                total_samples = 0
+                actual_frame_count = 0
+                while True:
+                    frame_header = f.read(6)  # seq(4) + count(2)
+                    if len(frame_header) < 6:
+                        break
+                    seq, count = struct.unpack("<IH", frame_header)
+                    
+                    # 验证采样点数是否合理
+                    if count > 4096:  # MAX_FRAME_SAMPLES
+                        raise ValueError(f"帧 {seq} 的采样点数异常: {count} (超过4096)")
+                    
+                    total_samples += count
+                    actual_frame_count += 1
+                    f.seek(count * 2, 1)  # 跳过数据
+                
+                # 验证帧数是否一致
+                if actual_frame_count != frame_count:
+                    import warnings
+                    warnings.warn(f"实际帧数 ({actual_frame_count}) 与文件头声明 ({frame_count}) 不一致")
+                
+                duration = total_samples / sample_rate if sample_rate > 0 else 0
+                
+                self._info = PlaybackInfo(
+                    path=str(self._file_path),
+                    format="bin",
+                    sample_rate_hz=sample_rate,
+                    total_frames=actual_frame_count,
+                    total_samples=total_samples,
+                    duration_s=duration,
+                )
+                
+                return self._info
+                
+        except FileNotFoundError:
+            raise ValueError(f"文件不存在: {self._file_path}")
+        except PermissionError:
+            raise ValueError(f"没有读取权限: {self._file_path}")
+        except struct.error as e:
+            raise ValueError(f"BIN 文件格式错误: {e}")
     
     def _load_csv(self) -> PlaybackInfo:
         """加载 CSV 格式文件"""
-        with open(self._file_path, "r", encoding="utf-8") as f:
-            lines = f.readlines()
+        try:
+            with open(self._file_path, "r", encoding="utf-8") as f:
+                lines = f.readlines()
+        except FileNotFoundError:
+            raise ValueError(f"文件不存在: {self._file_path}")
+        except PermissionError:
+            raise ValueError(f"没有读取权限: {self._file_path}")
+        except UnicodeDecodeError:
+            raise ValueError("CSV 文件编码错误（需要 UTF-8 编码）")
         
         self._csv_lines = []
         sample_rate = 0
@@ -145,19 +175,40 @@ class PlaybackReader(QThread):
         # 解析头部注释
         for line in lines:
             line = line.strip()
-            if line.startswith("# sample_rate="):
-                rate_str = line.split("=")[1].replace("Hz", "").strip()
-                sample_rate = int(rate_str)
+            if line.startswith("# sample_rate=") or line.startswith("#sample_rate="):
+                try:
+                    # 修复：更健壮的解析，支持多种格式
+                    # 格式1: # sample_rate=400Hz
+                    # 格式2: # sample_rate=400Hz, other_info
+                    # 格式3: # sample_rate: 400 Hz
+                    # 格式4: #sample_rate=400Hz
+                    if "=" in line:
+                        rate_part = line.split("=")[1].split(",")[0]  # 取逗号前的部分
+                    elif ":" in line:
+                        rate_part = line.split(":")[1].split(",")[0]
+                    else:
+                        raise ValueError("无法找到采样率分隔符")
+                    
+                    # 移除Hz后缀和空格
+                    rate_str = rate_part.replace("Hz", "").replace("hz", "").replace("HZ", "").strip()
+                    sample_rate = int(float(rate_str))  # 支持浮点数转换
+                    
+                except (ValueError, IndexError) as e:
+                    raise ValueError(
+                        f"无法解析采样率行: '{line}'\n"
+                        f"期望格式: '# sample_rate=400Hz' 或 '# sample_rate=400'\n"
+                        f"解析错误: {str(e)}"
+                    )
             elif line.startswith("#"):
                 continue
             elif line:
                 self._csv_lines.append(line)
         
         if not self._csv_lines:
-            raise ValueError("CSV 文件无有效数据")
+            raise ValueError("CSV 文件无有效数据行")
         
-        if sample_rate == 0:
-            raise ValueError("CSV 文件缺少采样率信息")
+        if sample_rate <= 0:
+            raise ValueError("CSV 文件缺少有效的采样率信息（需要注释: # sample_rate=XXXHz）")
         
         self._file_format = "csv"
         self._sample_rate_hz = sample_rate
@@ -167,15 +218,21 @@ class PlaybackReader(QThread):
         total_samples = len(self._csv_lines)
         
         # 统计帧数（通过 seq 变化）
-        frame_count = 1
+        frame_count = 0
         last_seq = None
         for line in self._csv_lines:
             parts = line.split(",")
             if len(parts) >= 1:
-                seq = int(parts[0])
-                if last_seq is not None and seq != last_seq:
-                    frame_count += 1
-                last_seq = seq
+                try:
+                    seq = int(parts[0])
+                    if seq != last_seq:
+                        frame_count += 1
+                        last_seq = seq
+                except (ValueError, IndexError):
+                    continue  # 跳过无效行
+        
+        if frame_count == 0:
+            raise ValueError("CSV 文件无法解析出有效的数据帧")
         
         duration = total_samples / sample_rate
         
@@ -251,6 +308,9 @@ class PlaybackReader(QThread):
         sample_idx = 0
         start_time = time.perf_counter()
         
+        # 配置批处理大小（每批采样点数）
+        batch_size = max(1, min(10, self._sample_rate_hz // 100))  # 根据采样率自适应
+        
         while not self._should_stop:
             # 处理暂停
             while self._should_pause and not self._should_stop:
@@ -271,27 +331,45 @@ class PlaybackReader(QThread):
             if len(data_bytes) < count * 2:
                 break
             
-            samples = np.frombuffer(data_bytes, dtype=np.uint16)
+            all_samples = np.frombuffer(data_bytes, dtype=np.uint16)
             
-            # 发送数据
-            self.frame_ready.emit(samples, seq)
+            # 将帧拆分为小批次回放，保证流畅度
+            for i in range(0, len(all_samples), batch_size):
+                if self._should_stop:
+                    break
+                
+                # 处理暂停
+                while self._should_pause and not self._should_stop:
+                    time.sleep(0.1)
+                
+                if self._should_stop:
+                    break
+                
+                # 获取当前批次
+                batch = all_samples[i:i+batch_size]
+                
+                # 发送数据
+                self.frame_ready.emit(batch, seq)
+                
+                # 更新进度
+                sample_idx += len(batch)
+                self._info.current_sample = sample_idx
+                self._info.current_time_s = sample_idx / self._sample_rate_hz
+                
+                # 精确时序控制
+                elapsed = time.perf_counter() - start_time
+                expected = sample_idx / self._sample_rate_hz / self._playback_speed
+                sleep_time = expected - elapsed
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
             
-            # 更新进度
+            # 更新帧进度
             frame_idx += 1
-            sample_idx += count
             self._info.current_frame = frame_idx
-            self._info.current_sample = sample_idx
-            self._info.current_time_s = sample_idx / self._sample_rate_hz
             
+            # 发送进度更新（每帧更新一次）
             progress = (sample_idx / self._info.total_samples * 100) if self._info.total_samples > 0 else 0
             self.progress_updated.emit(progress)
-            
-            # 控制回放速度
-            elapsed = time.perf_counter() - start_time
-            expected = sample_idx / self._sample_rate_hz / self._playback_speed
-            sleep_time = expected - elapsed
-            if sleep_time > 0:
-                time.sleep(sleep_time)
         
         self.playback_finished.emit()
     
@@ -306,12 +384,15 @@ class PlaybackReader(QThread):
             if len(parts) < 3:
                 continue
             
-            seq = int(parts[0])
-            adc_value = int(parts[2])
-            
-            if seq not in frames:
-                frames[seq] = []
-            frames[seq].append(adc_value)
+            try:
+                seq = int(parts[0])
+                adc_value = int(parts[2])
+                
+                if seq not in frames:
+                    frames[seq] = []
+                frames[seq].append(adc_value)
+            except (ValueError, IndexError):
+                continue  # 跳过无效行
         
         # 按序号排序
         sorted_seqs = sorted(frames.keys())
@@ -320,37 +401,53 @@ class PlaybackReader(QThread):
         sample_idx = 0
         start_time = time.perf_counter()
         
+        # 配置批处理大小（每批采样点数）
+        # 批处理可以平衡流畅度和性能
+        batch_size = max(1, min(10, self._sample_rate_hz // 100))  # 根据采样率自适应
+        
         for seq in sorted_seqs:
             if self._should_stop:
                 break
             
-            # 处理暂停
-            while self._should_pause and not self._should_stop:
-                time.sleep(0.1)
+            samples_in_frame = frames[seq]
             
-            if self._should_stop:
-                break
+            # 将帧拆分为小批次回放，保证流畅度
+            for i in range(0, len(samples_in_frame), batch_size):
+                if self._should_stop:
+                    break
+                
+                # 处理暂停
+                while self._should_pause and not self._should_stop:
+                    time.sleep(0.1)
+                
+                if self._should_stop:
+                    break
+                
+                # 获取当前批次
+                batch = samples_in_frame[i:i+batch_size]
+                samples = np.array(batch, dtype=np.uint16)
+                
+                # 发送数据
+                self.frame_ready.emit(samples, seq)
+                
+                # 更新进度
+                sample_idx += len(samples)
+                self._info.current_sample = sample_idx
+                self._info.current_time_s = sample_idx / self._sample_rate_hz
+                
+                # 精确时序控制
+                elapsed = time.perf_counter() - start_time
+                expected = sample_idx / self._sample_rate_hz / self._playback_speed
+                sleep_time = expected - elapsed
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
             
-            samples = np.array(frames[seq], dtype=np.uint16)
-            
-            # 发送数据
-            self.frame_ready.emit(samples, seq)
-            
-            # 更新进度
+            # 更新帧进度
             frame_idx += 1
-            sample_idx += len(samples)
             self._info.current_frame = frame_idx
-            self._info.current_sample = sample_idx
-            self._info.current_time_s = sample_idx / self._sample_rate_hz
             
+            # 发送进度更新（每帧更新一次，避免过于频繁）
             progress = (sample_idx / self._info.total_samples * 100) if self._info.total_samples > 0 else 0
             self.progress_updated.emit(progress)
-            
-            # 控制回放速度
-            elapsed = time.perf_counter() - start_time
-            expected = sample_idx / self._sample_rate_hz / self._playback_speed
-            sleep_time = expected - elapsed
-            if sleep_time > 0:
-                time.sleep(sleep_time)
         
         self.playback_finished.emit()

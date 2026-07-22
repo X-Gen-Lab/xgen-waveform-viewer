@@ -5,6 +5,82 @@ All notable changes to xgen-waveform-viewer will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.1] - 2025-01-22
+
+### Fixed - UX Completeness
+- **Playback Panel**: Enhanced signal connections and state management
+  - Added pause/resume event handlers
+  - Implemented proper serial control disabling during playback
+  - Fixed control restoration after playback stops
+  - Improved file loaded notification with detailed information
+- **Export Functions**: Comprehensive error handling and user feedback
+  - Added optional dependency checker with installation guidance
+  - Implemented data validation before export
+  - Added progress indication for large file exports
+  - Enhanced error messages with actionable solutions
+  - PNG/SVG: Pre-export data check, file size display
+  - MATLAB: scipy dependency check, detailed export info
+  - HDF5: h5py dependency check, compression ratio display, progress dialog
+  - HTML Report: Option to open in browser after generation
+- **Measurement Tools UI Integration**: Full accessibility
+  - Added tool dock panel with Measurement and Trigger tabs
+  - Implemented ruler shortcut (`M`) - toggle draggable measurement ruler
+  - Implemented peak detection shortcut (`P`) - auto-detect and mark peaks
+  - Connected measurement panel to update with results
+  - Added View menu item and `Ctrl+T` shortcut for tool panel
+- **Statistics Panel Access**: Easy discoverability
+  - Added View menu item "Statistics Panel"
+  - Added `Ctrl+I` shortcut
+  - Connected live data updates from serial reader
+
+### Added - Convenience Features
+- **Quick Playback After Recording**: Seamless workflow
+  - Prompt to playback immediately after recording completes
+  - Auto-open playback panel and load file
+  - Records metadata (frames, samples, duration) displayed
+- **Smart Dependency Management**: Better user experience
+  - Friendly dialog when optional packages missing
+  - Direct link to installation documentation
+  - Clear installation instructions (pip commands)
+- **Enhanced Status Feedback**: Real-time operation visibility
+  - All export operations show status in status bar
+  - Progress indication for long operations
+  - Clear mode indication (Live/Playback)
+  
+### Changed
+- Updated version to V2.4.1
+- Enhanced all export methods with try-catch error handling
+- Improved user notification messages with more context
+- Tool panel now hidden by default to save space
+
+### Technical Details
+- New methods in `MainWindow`:
+  - `_setup_tool_panels()`: Initialize tool dock with tabs
+  - `_check_optional_dependency()`: Unified dependency checker
+  - `_toggle_ruler()`: Ruler display toggle with auto-panel-show
+  - `_detect_peaks()`: Peak detection with configurable params
+  - `_on_ruler_measurement_changed()`: Ruler result callback
+  - `_on_trigger_config_changed()`: Trigger config callback
+  - `_show_statistics_panel()`: Statistics panel launcher
+  - `_load_playback_file()`: Auto-load playback file helper
+  - `_on_playback_paused()`: Playback pause event
+  - `_on_playback_resumed()`: Playback resume event
+- Enhanced shortcuts:
+  - `M`: Toggle ruler measurement tool
+  - `P`: Detect and mark peaks
+  - `Ctrl+T`: Toggle tool panel visibility
+  - `Ctrl+I`: Open statistics panel
+- Enhanced menu items:
+  - View > Tool Panel (Measurement & Trigger)
+  - View > Statistics Panel
+
+### Developer Notes
+- All new code includes comprehensive error handling
+- Logging added for all major operations
+- Status bar updates for better user feedback
+- No performance regression
+- Memory usage remains stable
+
 ## [2.4.0] - 2025-01-XX
 
 ### Added - Data Playback

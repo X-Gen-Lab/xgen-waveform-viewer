@@ -49,15 +49,27 @@ class MeasurementResult:
 class Ruler:
     """可拖动的标尺，用于测量时间间隔和幅值差"""
     
-    def __init__(self, plot_widget: pg.PlotWidget, color: tuple = (255, 255, 0)):
-        self.plot_widget = plot_widget
+    def __init__(self, plot_item, color: tuple = (255, 255, 0)):
+        """
+        初始化标尺
+        
+        参数:
+            plot_item: PlotItem 对象 (不是 PlotWidget)
+            color: 标尺颜色
+        """
+        self.plot_item = plot_item
         self.color = color
         self.visible = False
+        self.measurement_changed = None  # 信号槽，可以连接回调
         
         # 创建两条可移动的垂直线
         pen = pg.mkPen(color=color, width=2, style=Qt.PenStyle.DashLine)
         self.line1 = pg.InfiniteLine(angle=90, movable=True, pen=pen)
         self.line2 = pg.InfiniteLine(angle=90, movable=True, pen=pen)
+        
+        # 连接位置变化信号
+        self.line1.sigPositionChanged.connect(self._on_position_changed)
+        self.line2.sigPositionChanged.connect(self._on_position_changed)
         
         # 标签显示测量值
         self.label = pg.TextItem(anchor=(0.5, 1), color=color)
@@ -66,22 +78,29 @@ class Ruler:
         self.line1.setPos(0)
         self.line2.setPos(1)
         
+        # 自动显示
+        self.show()
+        
     def show(self):
         """显示标尺"""
         if not self.visible:
-            self.plot_widget.addItem(self.line1, ignoreBounds=True)
-            self.plot_widget.addItem(self.line2, ignoreBounds=True)
-            self.plot_widget.addItem(self.label, ignoreBounds=True)
+            self.plot_item.addItem(self.line1, ignoreBounds=True)
+            self.plot_item.addItem(self.line2, ignoreBounds=True)
+            self.plot_item.addItem(self.label, ignoreBounds=True)
             self.visible = True
             self.update_label()
             
     def hide(self):
         """隐藏标尺"""
         if self.visible:
-            self.plot_widget.removeItem(self.line1)
-            self.plot_widget.removeItem(self.line2)
-            self.plot_widget.removeItem(self.label)
+            self.plot_item.removeItem(self.line1)
+            self.plot_item.removeItem(self.line2)
+            self.plot_item.removeItem(self.label)
             self.visible = False
+    
+    def remove(self):
+        """移除标尺（同hide）"""
+        self.hide()
             
     def set_positions(self, t1: float, t2: float):
         """设置标尺位置"""
@@ -92,6 +111,10 @@ class Ruler:
     def get_positions(self) -> tuple[float, float]:
         """获取标尺位置"""
         return self.line1.pos()[0], self.line2.pos()[0]
+    
+    def _on_position_changed(self):
+        """位置改变时的回调"""
+        self.update_label()
         
     def update_label(self):
         """更新测量值标签"""
@@ -103,6 +126,16 @@ class Ruler:
         # 标签位置在两线中间上方
         self.label.setPos((t1 + t2) / 2, 0)
         self.label.setText(text)
+        
+        # 触发measurement_changed回调
+        if self.measurement_changed is not None:
+            result = {
+                'dt': dt,
+                'frequency': freq,
+                't1': t1,
+                't2': t2
+            }
+            self.measurement_changed(result)
 
 
 class PeakMarker:
@@ -136,6 +169,41 @@ class PeakMarker:
         self.plot_widget.addItem(scatter)
         self.markers.append(scatter)
         self.visible = True
+    
+    def update_peaks(self, pos_times: np.ndarray, pos_values: np.ndarray,
+                     neg_times: np.ndarray, neg_values: np.ndarray):
+        """更新峰值标记 (显示正负峰值)"""
+        self.clear()
+        
+        # 显示正峰值 (红色向上三角形)
+        if len(pos_times) > 0:
+            color_pos = (255, 100, 100)
+            scatter_pos = pg.ScatterPlotItem(
+                x=pos_times,
+                y=pos_values,
+                symbol='t',  # 向上三角形
+                size=12,
+                pen=pg.mkPen(color=color_pos, width=2),
+                brush=pg.mkBrush(*color_pos, 150)
+            )
+            self.plot_widget.addItem(scatter_pos)
+            self.markers.append(scatter_pos)
+        
+        # 显示负峰值 (绿色向下三角形)
+        if len(neg_times) > 0:
+            color_neg = (100, 255, 100)
+            scatter_neg = pg.ScatterPlotItem(
+                x=neg_times,
+                y=neg_values,
+                symbol='t1',  # 向下三角形
+                size=12,
+                pen=pg.mkPen(color=color_neg, width=2),
+                brush=pg.mkBrush(*color_neg, 150)
+            )
+            self.plot_widget.addItem(scatter_neg)
+            self.markers.append(scatter_neg)
+        
+        self.visible = len(self.markers) > 0
         
     def clear(self):
         """清除所有标记"""

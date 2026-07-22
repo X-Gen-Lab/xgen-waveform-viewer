@@ -684,6 +684,39 @@ class WaveformWidget(QWidget):
             total_samples=self._total_samples,
             sample_rate_hz=self._effective_sample_rate_hz,
         )
+    
+    def get_all_samples(self) -> np.ndarray:
+        """获取所有缓冲区数据 V2.4.1"""
+        return self._ordered_buffer_data().copy()
+    
+    def get_visible_samples(self) -> np.ndarray:
+        """获取当前可见区域的数据 V2.4.1"""
+        data = self._ordered_buffer_data()
+        if len(data) == 0:
+            return np.array([], dtype=np.uint16)
+        
+        # 获取当前 X 轴范围
+        x_range = self._plot_widget.viewRange()[0]
+        start_time = x_range[0]
+        end_time = x_range[1]
+        
+        # 转换为样本索引
+        first_sample_index = max(0, self._total_samples - len(data))
+        start_idx = max(0, int(start_time * self._effective_sample_rate_hz) - first_sample_index)
+        end_idx = min(len(data), int(end_time * self._effective_sample_rate_hz) - first_sample_index)
+        
+        if start_idx >= end_idx or end_idx <= 0 or start_idx >= len(data):
+            return np.array([], dtype=np.uint16)
+        
+        return data[start_idx:end_idx].copy()
+    
+    def get_sample_count(self) -> int:
+        """获取当前缓冲区样本数量 V2.4.1"""
+        return self._data_len()
+    
+    def get_plot_item(self):
+        """获取 PlotItem 对象（用于测量工具）V2.4.1"""
+        return self._plot_widget.getPlotItem()
 
     def apply_theme_colors(self, colors: dict):
         """应用主题颜色"""
