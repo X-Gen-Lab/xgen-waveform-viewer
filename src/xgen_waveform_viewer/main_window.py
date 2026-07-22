@@ -22,8 +22,10 @@ from PyQt6.QtWidgets import (
     QFileDialog,
     QMessageBox,
     QStatusBar,
+    QMenu,
 )
 from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtGui import QShortcut, QKeySequence, QAction
 from serial.tools import list_ports
 
 from .config import (
@@ -37,6 +39,8 @@ from .recorder import FrameRecorder
 from .serial_reader import SerialReader
 from .waveform_widget import MAX_BUFFER_SAMPLES, WaveformWidget
 from .version import APP_TITLE
+from .settings import AppSettings
+from .theme import Theme
 
 
 class MainWindow(QMainWindow):
@@ -47,11 +51,24 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(APP_TITLE)
         self.setMinimumSize(900, 560)
 
+        # 设置管理
+        self._settings = AppSettings()
+        
+        # 应用主题
+        theme = self._settings.get("display/theme", "dark")
+        Theme.apply_theme(theme)
+
         # 串口读取线程
         self._reader = SerialReader(self)
         self._reader.frame_ready.connect(self._on_frame_ready)
         self._reader.stats_updated.connect(self._on_stats_updated)
         self._reader.error_occurred.connect(self._on_serial_error)
+        
+        # 自动重连
+        self._auto_reconnect_enabled = self._settings.get("serial/auto_reconnect", False)
+        self._reconnect_timer = QTimer(self)
+        self._reconnect_timer.timeout.connect(self._attempt_reconnect)
+        self._last_port_config = None
 
         # 录制状态
         self._recording = False
@@ -66,6 +83,14 @@ class MainWindow(QMainWindow):
 
         self._setup_ui()
         self._setup_statusbar()
+        self._setup_shortcuts()
+        self._setup_menu()
+        
+        # 恢复窗口状态
+        self._restore_window_state()
+        
+        # 恢复用户设置
+        self._restore_settings()
 
         # 串口列表刷新定时器
         self._port_timer = QTimer(self)
@@ -289,6 +314,120 @@ class MainWindow(QMainWindow):
         self._status_label = QLabel("Disconnected")
         self._statusbar.addPermanentWidget(self._status_label)
 
+    def _setup_shortcuts(self):
+        """设置键盘快捷键"""
+        if not self._settings.get("shortcuts/enabled", True):
+            return
+        
+        # 空格：暂停/恢复自动滚动
+        self._shortcut_follow = QShortcut(QKeySequence(Qt.Key.Key_Space), self)
+        self._shortcut_follow.activated.connect(self._on_follow_clicked)
+        
+        # R：开始/停止录制
+        self._shortcut_record = QShortcut(QKeySequence("R"), self)
+        self._shortcut_record.activated.connect(self._toggle_record_shortcut)
+        
+        # C：连接/断开串口
+        self._shortcut_connect = QShortcut(QKeySequence("C"), self)
+        self._shortcut_connect.activated.connect(self._toggle_connect)
+        
+        # S：保存缓冲区
+        self._shortcut_save = QShortcut(QKeySequence("Ctrl+S"), self)
+        self._shortcut_save.activated.connect(self._save_buffer)
+        
+        # E：导出 CSV
+        self._shortcut_export = QShortcut(QKeySequence("Ctrl+E"), self)
+        self._shortcut_export.activated.connect(self._export_csv)
+        
+        # F：全屏显示缓冲区
+        self._shortcut_fit = QShortcut(QKeySequence("F"), self)
+        self._shortcut_fit.activated.connect(self._on_x_all_clicked)
+        
+        # Y：Y轴自动/手动切换
+        self._shortcut_y_mode = QShortcut(QKeySequence("Y"), self)
+        self._shortcut_y_mode.activated.connect(self._toggle_y_mode)
+        
+        # +/-：X轴缩放
+        self._shortcut_zoom_in = QShortcut(QKeySequence("+"), self)
+        self._shortcut_zoom_in.activated.connect(lambda: self._x_zoom(-1))
+        self._shortcut_zoom_out = QShortcut(QKeySequence("-"), self)
+        self._shortcut_zoom_out.activated.connect(lambda: self._x_zoom(1))
+
+    def _setup_menu(self):
+        """设置菜单栏"""
+        menubar = self.menuBar()
+        
+        # 文件菜单
+        file_menu = menubar.addMenu("&File")
+        
+        save_action = QAction("&Save Buffer", self)
+        save_action.setShortcut(QKeySequence("Ctrl+S"))
+        save_action.triggered.connect(self._save_buffer)
+        file_menu.addAction(save_action)
+        
+        export_action = QAction("&Export CSV", self)
+        export_action.setShortcut(QKeySequence("Ctrl+E"))
+        export_action.triggered.connect(self._export_csv)
+        file_menu.addAction(export_action)
+        
+        file_menu.addSeparator()
+        
+        exit_action = QAction("E&xit", self)
+        exit_action.setShortcut(QKeySequence("Ctrl+Q"))
+        exit_action.triggered.connect(self.close)
+        file_menu.addAction(exit_action)
+        
+        # 视图菜单
+        view_menu = menubar.addMenu("&View")
+        
+        theme_menu = view_menu.addMenu("&Theme")
+        dark_action = QAction("&Dark", self)
+        dark_action.triggered.connect(lambda: self._switch_theme("dark"))
+        theme_menu.addAction(dark_action)
+        
+        light_action = QAction("&Light", self)
+        light_action.triggered.connect(lambda: self._switch_theme("light"))
+        theme_menu.addAction(light_action)
+        
+        view_menu.addSeparator()
+        
+        follow_action = QAction("&Follow (Resume Auto-scroll)", self)
+        follow_action.setShortcut(QKeySequence(Qt.Key.Key_Space))
+        follow_action.triggered.connect(self._on_follow_clicked)
+        view_menu.addAction(follow_action)
+        
+        fit_action = QAction("Show &All Buffer", self)
+        fit_action.setShortcut(QKeySequence("F"))
+        fit_action.triggered.connect(self._on_x_all_clicked)
+        view_menu.addAction(fit_action)
+        
+        # 连接菜单
+        conn_menu = menubar.addMenu("&Connection")
+        
+        connect_action = QAction("&Connect/Disconnect", self)
+        connect_action.setShortcut(QKeySequence("C"))
+        connect_action.triggered.connect(self._toggle_connect)
+        conn_menu.addAction(connect_action)
+        
+        conn_menu.addSeparator()
+        
+        self._auto_reconnect_action = QAction("Auto &Reconnect", self)
+        self._auto_reconnect_action.setCheckable(True)
+        self._auto_reconnect_action.setChecked(self._auto_reconnect_enabled)
+        self._auto_reconnect_action.triggered.connect(self._toggle_auto_reconnect)
+        conn_menu.addAction(self._auto_reconnect_action)
+        
+        # 帮助菜单
+        help_menu = menubar.addMenu("&Help")
+        
+        shortcuts_action = QAction("&Keyboard Shortcuts", self)
+        shortcuts_action.triggered.connect(self._show_shortcuts_help)
+        help_menu.addAction(shortcuts_action)
+        
+        about_action = QAction("&About", self)
+        about_action.triggered.connect(self._show_about)
+        help_menu.addAction(about_action)
+
     # ── 串口管理 ───────────────────────────────────────────
 
     def _refresh_ports(self):
@@ -337,6 +476,9 @@ class MainWindow(QMainWindow):
         self._reader.configure(port_data, **cfg)
         self._reader.start()
 
+        # 保存配置用于自动重连
+        self._last_port_config = (port_data, cfg)
+
         self._btn_connect.setText("Disconnect")
         self._btn_record.setEnabled(True)
         self._set_config_enabled(False)
@@ -352,6 +494,11 @@ class MainWindow(QMainWindow):
         self._btn_record.setEnabled(False)
         self._set_config_enabled(True)
         self._status_label.setText("Disconnected")
+        
+        # 启动自动重连
+        if self._auto_reconnect_enabled and self._last_port_config:
+            reconnect_delay = self._settings.get("serial/reconnect_delay", 3.0)
+            self._reconnect_timer.start(int(reconnect_delay * 1000))
 
     def _toggle_y_mode(self):
         """切换 Y 轴显示模式"""
@@ -700,7 +847,186 @@ class MainWindow(QMainWindow):
 
     # ── 事件 ──────────────────────────────────────────────
 
+    def _restore_window_state(self):
+        """恢复窗口状态"""
+        geometry = self._settings.get("window/geometry")
+        if geometry:
+            self.restoreGeometry(geometry)
+        else:
+            width = self._settings.get("window/width", 1100)
+            height = self._settings.get("window/height", 650)
+            self.resize(width, height)
+
+    def _restore_settings(self):
+        """恢复用户设置"""
+        # 恢复串口设置
+        last_port = self._settings.get("serial/last_port", "")
+        if last_port:
+            idx = self._port_combo.findText(last_port, Qt.MatchFlag.MatchStartsWith)
+            if idx >= 0:
+                self._port_combo.setCurrentIndex(idx)
+        
+        baudrate = self._settings.get("serial/baudrate", UART_BAUDRATE)
+        self._baud_combo.setCurrentText(str(baudrate))
+        
+        databits = self._settings.get("serial/databits", 8)
+        self._databits_combo.setCurrentText(str(databits))
+        
+        stopbits = self._settings.get("serial/stopbits", 1.0)
+        self._stopbits_combo.setCurrentText(str(stopbits))
+        
+        parity = self._settings.get("serial/parity", "None")
+        self._parity_combo.setCurrentText(parity)
+        
+        # 恢复显示设置
+        x_window = self._settings.get("display/x_window", 2.0)
+        self._x_span_spin.setValue(x_window)
+        self._waveform.set_x_window(x_window)
+        
+        buffer_limit = self._settings.get("display/buffer_limit", 10.0)
+        self._buffer_limit_spin.setValue(buffer_limit)
+        
+        y_auto = self._settings.get("display/y_auto", True)
+        if not y_auto:
+            y_min = self._settings.get("display/y_min", 0.0)
+            y_max = self._settings.get("display/y_max", 1200.0)
+            self._waveform.set_y_manual_range(y_min, y_max)
+            self._y_min_spin.setValue(y_min)
+            self._y_max_spin.setValue(y_max)
+            self._btn_y_mode.setText("Manual")
+        
+        # 恢复录制设置
+        record_format = self._settings.get("record/format", "bin")
+        self._record_fmt_combo.setCurrentText(record_format.upper())
+        
+        record_dir = self._settings.get("record/save_dir", "")
+        if record_dir:
+            self._record_dir = Path(record_dir)
+            self._btn_set_path.setText(f"Dir: ...{self._record_dir.name[-20:]}")
+            self._btn_set_path.setToolTip(str(self._record_dir))
+
+    def _save_settings(self):
+        """保存用户设置"""
+        # 保存窗口状态
+        self._settings.set("window/geometry", self.saveGeometry())
+        self._settings.set("window/width", self.width())
+        self._settings.set("window/height", self.height())
+        
+        # 保存串口设置
+        port_data = self._port_combo.currentData()
+        if port_data:
+            self._settings.set("serial/last_port", port_data)
+        
+        self._settings.set("serial/baudrate", int(self._baud_combo.currentText()))
+        self._settings.set("serial/databits", int(self._databits_combo.currentText()))
+        
+        stopbits_text = self._stopbits_combo.currentText()
+        self._settings.set("serial/stopbits", float(stopbits_text))
+        
+        self._settings.set("serial/parity", self._parity_combo.currentText())
+        self._settings.set("serial/auto_reconnect", self._auto_reconnect_enabled)
+        
+        # 保存显示设置
+        self._settings.set("display/x_window", self._x_span_spin.value())
+        self._settings.set("display/buffer_limit", self._buffer_limit_spin.value())
+        self._settings.set("display/y_auto", self._waveform._y_auto_fit)
+        
+        y_min, y_max = self._waveform.get_y_manual_range()
+        self._settings.set("display/y_min", y_min)
+        self._settings.set("display/y_max", y_max)
+        
+        # 保存录制设置
+        self._settings.set("record/format", self._record_format)
+        if self._record_dir:
+            self._settings.set("record/save_dir", str(self._record_dir))
+        
+        self._settings.sync()
+
+    def _switch_theme(self, theme: str):
+        """切换主题"""
+        Theme.apply_theme(theme)
+        self._settings.set("display/theme", theme)
+        self._settings.sync()
+        
+        # 更新波形颜色
+        colors = Theme.get_waveform_colors(theme)
+        self._waveform.apply_theme_colors(colors)
+        
+        QMessageBox.information(
+            self,
+            "Theme Changed",
+            f"Theme switched to {theme.capitalize()}.\nSome changes will take full effect after restart.",
+        )
+
+    def _toggle_auto_reconnect(self):
+        """切换自动重连"""
+        self._auto_reconnect_enabled = self._auto_reconnect_action.isChecked()
+        self._settings.set("serial/auto_reconnect", self._auto_reconnect_enabled)
+        self._settings.sync()
+        
+        status = "enabled" if self._auto_reconnect_enabled else "disabled"
+        self._status_label.setText(f"Auto-reconnect {status}")
+
+    def _attempt_reconnect(self):
+        """尝试自动重连"""
+        if not self._auto_reconnect_enabled or self._reader.isRunning():
+            self._reconnect_timer.stop()
+            return
+        
+        if self._last_port_config:
+            port, cfg = self._last_port_config
+            self._reader.configure(port, **cfg)
+            self._reader.start()
+            
+            if self._reader.isRunning():
+                self._reconnect_timer.stop()
+                self._btn_connect.setText("Disconnect")
+                self._btn_record.setEnabled(True)
+                self._set_config_enabled(False)
+                self._status_label.setText(f"Reconnected: {port} @ {cfg['baudrate']}")
+                QMessageBox.information(self, "Reconnected", f"Successfully reconnected to {port}")
+
+    def _toggle_record_shortcut(self):
+        """快捷键触发录制"""
+        if not self._btn_record.isEnabled():
+            return
+        self._toggle_record()
+
+    def _show_shortcuts_help(self):
+        """显示快捷键帮助"""
+        shortcuts = """
+        <h3>Keyboard Shortcuts</h3>
+        <table cellpadding="4">
+        <tr><td><b>Space</b></td><td>Resume auto-scroll (Follow)</td></tr>
+        <tr><td><b>C</b></td><td>Connect/Disconnect serial</td></tr>
+        <tr><td><b>R</b></td><td>Start/Stop recording</td></tr>
+        <tr><td><b>F</b></td><td>Fit all buffer data in view</td></tr>
+        <tr><td><b>Y</b></td><td>Toggle Y-axis auto/manual mode</td></tr>
+        <tr><td><b>+</b></td><td>Zoom in (X-axis)</td></tr>
+        <tr><td><b>-</b></td><td>Zoom out (X-axis)</td></tr>
+        <tr><td><b>Ctrl+S</b></td><td>Save buffer to file</td></tr>
+        <tr><td><b>Ctrl+E</b></td><td>Export buffer as CSV</td></tr>
+        <tr><td><b>Ctrl+Q</b></td><td>Exit application</td></tr>
+        </table>
+        <p><i>Mouse: Left-drag to pan, Scroll-wheel to zoom, Double-click to follow</i></p>
+        """
+        QMessageBox.information(self, "Keyboard Shortcuts", shortcuts)
+
+    def _show_about(self):
+        """显示关于对话框"""
+        from .version import __version__
+        about_text = f"""
+        <h2>{APP_TITLE}</h2>
+        <p>Version: {__version__}</p>
+        <p>A PyQt6/pyqtgraph desktop viewer for real-time ADC waveform data over UART.</p>
+        <p>Copyright © 2024 X-GEN-LAB</p>
+        <p>License: MIT</p>
+        <p><a href="https://github.com/X-Gen-Lab/xgen-waveform-viewer">GitHub Repository</a></p>
+        """
+        QMessageBox.about(self, "About", about_text)
+
     def closeEvent(self, event):
+        self._save_settings()
         if self._reader.isRunning():
             self._disconnect()
         event.accept()

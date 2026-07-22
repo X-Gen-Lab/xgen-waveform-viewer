@@ -19,6 +19,8 @@ from PyQt6.QtWidgets import QApplication
 from .main_window import MainWindow
 from .config import UART_BAUDRATE
 from .version import APP_NAME, APP_TITLE, __version__
+from .settings import AppSettings
+from .theme import Theme
 
 
 def parse_args() -> argparse.Namespace:
@@ -32,15 +34,16 @@ def parse_args() -> argparse.Namespace:
 def main():
     args = parse_args()
 
-    # pyqtgraph 全局设置
-    pg.setConfigOptions(antialias=False, background="k", foreground="w")
-
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(__version__)
 
+    # 加载并应用主题
+    settings = AppSettings()
+    theme = settings.get("display/theme", "dark")
+    Theme.apply_theme(theme)
+
     window = MainWindow()
-    window.resize(1100, 650)
     window.show()
 
     # 如果命令行指定了端口，自动连接

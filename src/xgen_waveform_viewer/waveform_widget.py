@@ -134,6 +134,16 @@ class WaveformWidget(QWidget):
         self._plot_widget.addItem(self._h_cursor, ignoreBounds=True)
         self._v_cursor.hide()
         self._h_cursor.hide()
+        
+        # 保存主题颜色引用
+        self._theme_colors = {
+            "curve": (0, 255, 160),
+            "cursor_v": (255, 212, 96, 150),
+            "cursor_h": (255, 212, 96, 120),
+            "grid_alpha": 0.22,
+            "text": (225, 235, 238),
+            "axis": (150, 165, 170),
+        }
 
         # 监听 X 轴范围变化 (用户拖拽/缩放)
         self._plot_widget.sigXRangeChanged.connect(self._on_x_range_changed)
@@ -659,6 +669,26 @@ class WaveformWidget(QWidget):
             total_samples=self._total_samples,
             sample_rate_hz=self._effective_sample_rate_hz,
         )
+
+    def apply_theme_colors(self, colors: dict):
+        """应用主题颜色"""
+        self._theme_colors = colors
+        
+        # 更新曲线颜色
+        self._curve.setPen(pg.mkPen(color=colors["curve"], width=1.4))
+        
+        # 更新光标颜色
+        self._v_cursor.setPen(pg.mkPen(colors["cursor_v"], width=1))
+        self._h_cursor.setPen(pg.mkPen(colors["cursor_h"], width=1))
+        
+        # 更新网格
+        self._plot_widget.showGrid(x=True, y=True, alpha=colors["grid_alpha"])
+        
+        # 更新坐标轴颜色
+        self._plot_widget.getAxis("left").setPen(pg.mkPen(colors["axis"]))
+        self._plot_widget.getAxis("bottom").setPen(pg.mkPen(colors["axis"]))
+        self._plot_widget.getAxis("left").setTextPen(pg.mkPen(colors["text"]))
+        self._plot_widget.getAxis("bottom").setTextPen(pg.mkPen(colors["text"]))
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
