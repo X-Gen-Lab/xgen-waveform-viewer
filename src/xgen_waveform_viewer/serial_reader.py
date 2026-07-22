@@ -9,6 +9,8 @@
   [SAMPLES]              CNT×2B  CNT × uint16 LE
   [CRC16]                    2B  CRC-16-CCITT (覆盖 META+SAMPLES)
   Total: 8 + CNT*2 + 2 bytes (动态)
+
+V2.3: 添加日志记录功能
 """
 
 import time
@@ -28,6 +30,7 @@ from .config import (
     MAX_FRAME_SAMPLES,
     UART_BAUDRATE,
 )
+from .logger import get_logger
 
 # 最小帧大小: sync(2) + meta(6) + crc(2) = 10 bytes (CNT=0 时)
 _MIN_FRAME_SIZE = FRAME_HEADER_SIZE + CRC_BYTES
@@ -86,6 +89,9 @@ class SerialReader(QThread):
         self._stats_time = 0.0
         self._stats_frames = 0
         self._stats_samples = 0
+        
+        # V2.3: 日志记录
+        self._logger = get_logger()
 
     @property
     def is_connected(self) -> bool:
@@ -164,6 +170,8 @@ class SerialReader(QThread):
         if next_sync != -1 and next_sync < frame_size:
             self._short_frame_count += 1
             self._resync_count += 1
+            # V2.3: 记录短帧事件
+            self._logger.log_frame_event("short_frame", details={"expected_size": frame_size, "found_sync_at": next_sync})
             return False, next_sync
 
         # 数据不足，等待更多
@@ -181,6 +189,8 @@ class SerialReader(QThread):
         else:
             # CRC 失败
             self._crc_error_count += 1
+            # V2.3: 记录 CRC 错误
+            self._logger.log_crc_error()
             return False, 1
 
     def run(self):
@@ -199,8 +209,15 @@ class SerialReader(QThread):
                 self._serial.set_buffer_size(rx_size=65536)
             except (AttributeError, ValueError):
                 pass  # 部分平台/驱动不支持
+            # V2.3: 记录串口打开成功
+            self._logger.log_serial_event("opened", details={
+                "port": self._port,
+                "baudrate": self._baudrate
+            })
         except serial.SerialException as e:
             self.error_occurred.emit(f"串口打开失败: {e}")
+            self._logger.error(f"Failed to open serial port {self._port}: {e}", 
+                             category="serial", exc_info=True)
             return
 
         self._running = True
@@ -287,6 +304,8 @@ class SerialReader(QThread):
                             # 同步头不匹配 → 帧对齐丢失
                             synced = False
                             self._resync_count += 1
+                            # V2.3: 记录重同步事件
+                            self._logger.log_resync("sync_header_mismatch")
                             del buf[:1]
 
                     # 定期发送统计信息 (每 0.5 秒)
@@ -326,6 +345,10 @@ class SerialReader(QThread):
         # 序列号间隙检测
         if self._last_seq >= 0 and seq != (self._last_seq + 1) & 0xFFFFFFFF:
             self._seq_gap_count += 1
+            # V2.3: 记录序列号间隙
+            expected = (self._last_seq + 1) & 0xFFFFFFFF
+            gap = (seq - expected) & 0xFFFFFFFF
+            self._logger.log_seq_gap(expected, seq, gap)
         self._last_seq = seq
 
         with self._record_sink_lock:

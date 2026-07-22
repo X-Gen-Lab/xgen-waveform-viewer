@@ -6,6 +6,10 @@ V2.2 新增:
 - 测量工具 (标尺、峰值检测、统计值)
 - 触发功能 (边沿/电平触发、单次触发)
 - 录制增强 (暂停/恢复、分段录制、实时预览)
+
+V2.3 新增:
+- 性能优化 (降采样、帧率限制、内存管理)
+- 鲁棒性提升 (日志系统、统计面板)
 """
 
 import json
@@ -52,6 +56,13 @@ from .measurement_tools import (
     Ruler, PeakMarker, MeasurementPanel, MeasurementEngine, MeasurementResult
 )
 from .trigger import TriggerPanel, TriggerDetector, TriggerConfig
+from .performance import PerformanceOptimizer, MemoryOptimizer
+from .logger import init_logger, get_logger
+from .statistics_panel import StatisticsPanel
+from .measurement_tools import (
+    Ruler, PeakMarker, MeasurementPanel, MeasurementEngine, MeasurementResult
+)
+from .trigger import TriggerPanel, TriggerDetector, TriggerConfig
 
 
 class MainWindow(QMainWindow):
@@ -61,6 +72,14 @@ class MainWindow(QMainWindow):
         super().__init__(parent)
         self.setWindowTitle(APP_TITLE)
         self.setMinimumSize(900, 560)
+
+        # V2.3: 初始化日志系统
+        self._logger = init_logger()
+        self._logger.info("Application started", category="app")
+        
+        # V2.3: 性能优化器和内存优化器
+        self._perf_optimizer = PerformanceOptimizer()
+        self._mem_optimizer = MemoryOptimizer()
 
         # 设置管理
         self._settings = AppSettings()
@@ -104,6 +123,9 @@ class MainWindow(QMainWindow):
         # V2.2 触发功能
         self._trigger_detector = TriggerDetector()
         self._trigger_detector.trigger_fired.connect(self._on_trigger_fired)
+        
+        # V2.3: 统计面板
+        self._statistics_panel: StatisticsPanel | None = None
 
         self._setup_ui()
         self._setup_statusbar()

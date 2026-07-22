@@ -3,6 +3,8 @@
 基于 pyqtgraph，实时滚动显示 ADC 采样数据
 X 轴: 自动滚动 / 手动缩放平移 / 滚轮缩放
 Y 轴: 自适应 / 固定 uint16 全范围
+
+V2.3: 添加性能优化支持 (降采样渲染)
 """
 
 from dataclasses import dataclass
@@ -68,6 +70,10 @@ class WaveformWidget(QWidget):
         self._y_margin = 0.05
         self._y_manual_min = Y_MANUAL_MIN_DEFAULT
         self._y_manual_max = Y_MANUAL_MAX_DEFAULT
+        
+        # V2.3: 性能优化器（可选，由外部设置）
+        self._perf_optimizer = None
+        self._downsample_enabled = False
 
         self._setup_ui()
 
@@ -534,8 +540,17 @@ class WaveformWidget(QWidget):
         first_sample_index = max(0, self._total_samples - len(data_f))
         t = self._sample_index_to_time(first_sample_index + np.arange(len(data_f), dtype=np.float64))
 
-        # 更新曲线
-        self._curve.setData(t, data_f)
+        # V2.3: 使用性能优化器进行降采样渲染
+        if self._perf_optimizer and self._downsample_enabled:
+            try:
+                t_render, data_render = self._perf_optimizer.prepare_render_data(t, data_f)
+                self._curve.setData(t_render, data_render)
+            except Exception:
+                # 降采样失败时回退到原始数据
+                self._curve.setData(t, data_f)
+        else:
+            # 更新曲线
+            self._curve.setData(t, data_f)
 
         # X 轴
         if self._x_auto_scroll and len(t) > 0:
@@ -689,6 +704,24 @@ class WaveformWidget(QWidget):
         self._plot_widget.getAxis("bottom").setPen(pg.mkPen(colors["axis"]))
         self._plot_widget.getAxis("left").setTextPen(pg.mkPen(colors["text"]))
         self._plot_widget.getAxis("bottom").setTextPen(pg.mkPen(colors["text"]))
+    
+    def set_performance_optimizer(self, optimizer):
+        """设置性能优化器 (V2.3)"""
+        self._perf_optimizer = optimizer
+        if optimizer:
+            # 更新刷新间隔
+            interval = optimizer.get_refresh_interval_ms()
+            self._plot_timer.setInterval(interval)
+            self._downsample_enabled = optimizer.is_downsampling_enabled()
+    
+    def enable_downsampling(self, enabled: bool):
+        """启用/禁用降采样 (V2.3)"""
+        self._downsample_enabled = enabled
+        self._plot_dirty = True
+    
+    def is_downsampling_enabled(self) -> bool:
+        """是否启用降采样 (V2.3)"""
+        return self._downsample_enabled
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
