@@ -5,6 +5,147 @@ All notable changes to xgen-waveform-viewer will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.0] - 2025-01-XX
+
+### Added - Data Playback
+- **Playback Engine**: Complete data replay system
+  - Support for BIN and CSV format playback
+  - Variable playback speed (0.1x ~ 10x adjustable)
+  - Play/Pause/Stop/Resume controls
+  - Visual progress bar with time display
+  - Independent playback control panel
+  - Accurate timing control with speed adjustment
+- **Playback UI**: Dedicated playback control panel
+  - File selection dialog with format filtering
+  - Speed selector with preset speeds
+  - Progress slider for visual feedback
+  - File information display (format, sample rate, duration, etc.)
+  - Keyboard shortcut: `Ctrl+P` to open playback panel
+- **Playback Modes**: Seamless integration with main window
+  - Automatic switching between live and playback modes
+  - Disables serial connection during playback
+  - Uses same waveform display as live acquisition
+  - Maintains all viewing controls (zoom, pan, measurements)
+
+### Added - Advanced Export Options
+- **Image Export**: High-quality waveform image generation
+  - PNG export with configurable resolution (default: 1920x1080)
+  - SVG vector export for publication-quality graphics
+  - Exports current visible waveform region
+  - Accessible via File > Export As menu
+- **MATLAB Format (.mat)**: Scientific computing integration
+  - Exports samples, time array, and sample rate
+  - Includes metadata and export timestamp
+  - Compatible with MATLAB/Octave
+  - Requires optional `scipy` package
+  - Simple to load: `data = load('file.mat')`
+- **HDF5 Format (.h5)**: High-efficiency data storage
+  - Compressed storage using gzip (level 9)
+  - Typical compression ratio: 50-70% space savings
+  - Preserves all metadata and attributes
+  - Standard format for scientific data
+  - Requires optional `h5py` package
+  - Supports very large datasets efficiently
+- **HTML Statistics Report**: Professional documentation
+  - Automatically generated HTML report with statistics
+  - Includes waveform preview image
+  - Displays comprehensive statistics (mean, RMS, peak-to-peak, etc.)
+  - Frequency domain analysis (if applicable)
+  - Data quality metrics (CRC errors, gaps, etc.)
+  - Beautiful, print-friendly styling
+  - Suitable for archiving and sharing
+
+### Added - Waveform Comparison
+- **Comparison Tool**: Statistical waveform analysis
+  - Compare two waveforms side-by-side
+  - Statistical metrics: mean, std, min, max
+  - Difference calculations: MSE, MAE, max difference
+  - Correlation coefficient
+  - Programmatic API in `exporter.py`
+
+### Changed
+- Updated version to V2.4.0
+- Enhanced main window with playback and export menus
+- Added PyQt6-SVG dependency for SVG export support
+- Improved file menu organization with export submenu
+- Extended `pyproject.toml` with optional dependencies
+
+### Technical Details - New Modules
+- **`playback.py`**: Playback engine core
+  - `PlaybackReader` class: Thread-based playback engine
+  - `PlaybackInfo` dataclass: File and playback information
+  - `PlaybackState` type: State enumeration (stopped/playing/paused)
+  - Supports BIN and CSV format parsing
+  - Accurate timing with speed control
+  - Progress tracking and reporting
+- **`playback_panel.py`**: Playback control UI
+  - `PlaybackPanel` class: Qt widget for playback control
+  - File selection and loading
+  - Speed control with presets
+  - Progress visualization
+  - Play/Pause/Stop controls
+  - Time formatting utilities
+- **`exporter.py`**: Unified export functionality
+  - `WaveformExporter` class: All export methods
+  - `export_image_png()`: PNG image export
+  - `export_image_svg()`: SVG vector export
+  - `export_matlab()`: MATLAB format export
+  - `export_hdf5()`: HDF5 format export with compression
+  - `load_hdf5()`: HDF5 file loading
+  - `export_statistics_html()`: HTML report generation
+  - `export_statistics_json()`: JSON statistics export
+  - `WaveformComparator` class: Waveform comparison tools
+
+### API Changes
+- Main window methods:
+  - `_show_playback_panel()`: Open playback control panel
+  - `_export_png()`: Export waveform as PNG
+  - `_export_svg()`: Export waveform as SVG
+  - `_export_matlab()`: Export data as MATLAB format
+  - `_export_hdf5()`: Export data as HDF5 format
+  - `_export_report_html()`: Generate HTML report
+- Playback panel signals:
+  - `file_loaded`: Emitted when file is loaded
+  - `playback_started`: Emitted when playback starts
+  - `playback_paused`: Emitted when playback pauses
+  - `playback_resumed`: Emitted when playback resumes
+  - `playback_stopped`: Emitted when playback stops
+
+### Dependencies
+- **Required**: Added `PyQt6-SVG>=6.4.0` for SVG export
+- **Optional**: 
+  - `scipy>=1.10.0` for MATLAB format export
+  - `h5py>=3.8.0` for HDF5 format support
+- Install full features: `pip install "xgen-waveform-viewer[full]"`
+
+### Configuration
+New menu items:
+- File > Export As > Export as PNG...
+- File > Export As > Export as SVG...
+- File > Export As > Export as MATLAB (.mat)...
+- File > Export As > Export as HDF5 (.h5)...
+- File > Export As > Export Report (HTML)...
+- File > Playback Recording... (Ctrl+P)
+
+### Performance
+- Playback engine optimized for large files
+- HDF5 compression typically saves 50-70% disk space
+- PNG export renders at full resolution (1920x1080)
+- SVG export creates resolution-independent graphics
+- HTML reports are lightweight and fast to generate
+
+### Documentation
+- Added `RELEASE_NOTES_V2.4.md` with comprehensive feature guide
+- Added `examples/v2.4_playback_and_export_example.py` with usage examples
+- Updated README.md with V2.4 features
+- Updated ROADMAP.md to mark V2.4 as completed
+
+### Known Limitations
+- Playback of very large files (>100MB) may use significant memory
+- PNG/SVG export captures only current visible region
+- MATLAB and HDF5 export require optional dependencies
+- Playback timing may vary slightly at extreme speeds (>5x)
+
 ## [2.3.0] - 2024-12-22
 
 ### Added - Performance Optimization

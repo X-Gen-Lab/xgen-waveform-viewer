@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "xgen-waveform-viewer"
-version = "2.3.0"
+version = "2.4.0"
 description = "A PyQt6 desktop viewer for real-time ADC waveform data over UART."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -15,8 +15,15 @@ authors = [
 dependencies = [
     "pyqtgraph>=0.13.0",
     "PyQt6>=6.4.0",
+    "PyQt6-SVG>=6.4.0",
     "pyserial>=3.5",
     "numpy>=1.24.0",
+]
+
+[project.optional-dependencies]
+full = [
+    "scipy>=1.10.0",  # For MATLAB .mat export
+    "h5py>=3.8.0",    # For HDF5 format
 ]
 
 [project.urls]

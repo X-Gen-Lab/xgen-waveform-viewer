@@ -1,4 +1,11 @@
 pyqtgraph>=0.13.0
 PyQt6>=6.4.0
+PyQt6-SVG>=6.4.0
 pyserial>=3.5
 numpy>=1.24.0
+
+# Optional dependencies for advanced features
+# Install with: pip install scipy h5py
+# Or: pip install -e ".[full]"
+# scipy>=1.10.0  # For MATLAB .mat export
+# h5py>=3.8.0    # For HDF5 format

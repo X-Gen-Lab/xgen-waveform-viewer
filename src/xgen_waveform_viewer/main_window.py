@@ -10,6 +10,11 @@ V2.2 新增:
 V2.3 新增:
 - 性能优化 (降采样、帧率限制、内存管理)
 - 鲁棒性提升 (日志系统、统计面板)
+
+V2.4 新增:
+- 数据回放 (多格式支持、变速播放、进度控制)
+- 高级导出 (PNG/SVG/MATLAB/HDF5/HTML报告)
+- 波形比较工具
 """
 
 import json
@@ -59,10 +64,8 @@ from .trigger import TriggerPanel, TriggerDetector, TriggerConfig
 from .performance import PerformanceOptimizer, MemoryOptimizer
 from .logger import init_logger, get_logger
 from .statistics_panel import StatisticsPanel
-from .measurement_tools import (
-    Ruler, PeakMarker, MeasurementPanel, MeasurementEngine, MeasurementResult
-)
-from .trigger import TriggerPanel, TriggerDetector, TriggerConfig
+from .playback_panel import PlaybackPanel
+from .exporter import WaveformExporter
 
 
 class MainWindow(QMainWindow):
@@ -126,6 +129,10 @@ class MainWindow(QMainWindow):
         
         # V2.3: 统计面板
         self._statistics_panel: StatisticsPanel | None = None
+        
+        # V2.4: 回放控制面板
+        self._playback_panel: PlaybackPanel | None = None
+        self._playback_mode = False  # 是否处于回放模式
 
         self._setup_ui()
         self._setup_statusbar()
@@ -415,6 +422,39 @@ class MainWindow(QMainWindow):
         export_action.setShortcut(QKeySequence("Ctrl+E"))
         export_action.triggered.connect(self._export_csv)
         file_menu.addAction(export_action)
+        
+        file_menu.addSeparator()
+        
+        # V2.4: 导出子菜单
+        export_menu = file_menu.addMenu("E&xport As")
+        
+        export_png_action = QAction("Export as &PNG...", self)
+        export_png_action.triggered.connect(self._export_png)
+        export_menu.addAction(export_png_action)
+        
+        export_svg_action = QAction("Export as &SVG...", self)
+        export_svg_action.triggered.connect(self._export_svg)
+        export_menu.addAction(export_svg_action)
+        
+        export_mat_action = QAction("Export as &MATLAB (.mat)...", self)
+        export_mat_action.triggered.connect(self._export_matlab)
+        export_menu.addAction(export_mat_action)
+        
+        export_hdf5_action = QAction("Export as &HDF5 (.h5)...", self)
+        export_hdf5_action.triggered.connect(self._export_hdf5)
+        export_menu.addAction(export_hdf5_action)
+        
+        export_report_action = QAction("Export &Report (HTML)...", self)
+        export_report_action.triggered.connect(self._export_report_html)
+        export_menu.addAction(export_report_action)
+        
+        file_menu.addSeparator()
+        
+        # V2.4: 回放功能
+        playback_action = QAction("&Playback Recording...", self)
+        playback_action.setShortcut(QKeySequence("Ctrl+P"))
+        playback_action.triggered.connect(self._show_playback_panel)
+        file_menu.addAction(playback_action)
         
         file_menu.addSeparator()
         
@@ -1132,6 +1172,237 @@ class MainWindow(QMainWindow):
         <p><a href="https://github.com/X-Gen-Lab/xgen-waveform-viewer">GitHub Repository</a></p>
         """
         QMessageBox.about(self, "About", about_text)
+    
+    # ── V2.4: 导出功能 ──────────────────────────────────────
+    
+    def _export_png(self):
+        """导出波形为 PNG 图片"""
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "导出为 PNG",
+            str(Path.home() / f"waveform_{datetime.now():%Y%m%d_%H%M%S}.png"),
+            "PNG Files (*.png)",
+        )
+        if not path:
+            return
+        
+        success = WaveformExporter.export_image_png(self._waveform, path, 1920, 1080)
+        
+        if success:
+            QMessageBox.information(self, "Success", f"波形已导出到:\n{path}")
+        else:
+            QMessageBox.critical(self, "Error", "导出 PNG 失败")
+    
+    def _export_svg(self):
+        """导出波形为 SVG 矢量图"""
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "导出为 SVG",
+            str(Path.home() / f"waveform_{datetime.now():%Y%m%d_%H%M%S}.svg"),
+            "SVG Files (*.svg)",
+        )
+        if not path:
+            return
+        
+        success = WaveformExporter.export_image_svg(self._waveform, path, 1920, 1080)
+        
+        if success:
+            QMessageBox.information(self, "Success", f"波形已导出到:\n{path}")
+        else:
+            QMessageBox.critical(self, "Error", "导出 SVG 失败")
+    
+    def _export_matlab(self):
+        """导出数据为 MATLAB .mat 格式"""
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "导出为 MATLAB",
+            str(Path.home() / f"waveform_{datetime.now():%Y%m%d_%H%M%S}.mat"),
+            "MATLAB Files (*.mat)",
+        )
+        if not path:
+            return
+        
+        snapshot = self._waveform.get_buffer_snapshot()
+        if len(snapshot.data) == 0:
+            QMessageBox.information(self, "No Data", "当前缓冲区没有可导出的数据")
+            return
+        
+        metadata = {
+            'first_sample_index': snapshot.first_sample_index,
+            'total_samples_seen': snapshot.total_samples,
+            'export_source': 'display_buffer',
+        }
+        
+        success = WaveformExporter.export_matlab(
+            snapshot.data,
+            path,
+            int(snapshot.sample_rate_hz),
+            metadata
+        )
+        
+        if success:
+            QMessageBox.information(
+                self,
+                "Success",
+                f"已导出 {len(snapshot.data)} 个采样点到 MATLAB 格式:\n{path}"
+            )
+        else:
+            QMessageBox.critical(
+                self,
+                "Error",
+                "导出 MATLAB 格式失败\n请确保已安装 scipy: pip install scipy"
+            )
+    
+    def _export_hdf5(self):
+        """导出数据为 HDF5 格式"""
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "导出为 HDF5",
+            str(Path.home() / f"waveform_{datetime.now():%Y%m%d_%H%M%S}.h5"),
+            "HDF5 Files (*.h5 *.hdf5)",
+        )
+        if not path:
+            return
+        
+        snapshot = self._waveform.get_buffer_snapshot()
+        if len(snapshot.data) == 0:
+            QMessageBox.information(self, "No Data", "当前缓冲区没有可导出的数据")
+            return
+        
+        metadata = {
+            'first_sample_index': snapshot.first_sample_index,
+            'total_samples_seen': snapshot.total_samples,
+            'export_source': 'display_buffer',
+        }
+        
+        success = WaveformExporter.export_hdf5(
+            snapshot.data,
+            path,
+            int(snapshot.sample_rate_hz),
+            metadata,
+            compression=True
+        )
+        
+        if success:
+            QMessageBox.information(
+                self,
+                "Success",
+                f"已导出 {len(snapshot.data)} 个采样点到 HDF5 格式:\n{path}\n"
+                f"文件使用 gzip 压缩，可高效存储大量数据"
+            )
+        else:
+            QMessageBox.critical(
+                self,
+                "Error",
+                "导出 HDF5 格式失败\n请确保已安装 h5py: pip install h5py"
+            )
+    
+    def _export_report_html(self):
+        """导出统计报告为 HTML"""
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "导出统计报告",
+            str(Path.home() / f"report_{datetime.now():%Y%m%d_%H%M%S}.html"),
+            "HTML Files (*.html)",
+        )
+        if not path:
+            return
+        
+        snapshot = self._waveform.get_buffer_snapshot()
+        if len(snapshot.data) == 0:
+            QMessageBox.information(self, "No Data", "当前缓冲区没有可导出的数据")
+            return
+        
+        # 计算统计信息
+        stats = {
+            'sample_rate_hz': snapshot.sample_rate_hz,
+            'total_samples': len(snapshot.data),
+            'duration_s': len(snapshot.data) / snapshot.sample_rate_hz,
+            'mean': float(np.mean(snapshot.data)),
+            'rms': float(np.sqrt(np.mean(snapshot.data.astype(float) ** 2))),
+            'max': float(np.max(snapshot.data)),
+            'min': float(np.min(snapshot.data)),
+            'peak_to_peak': float(np.max(snapshot.data) - np.min(snapshot.data)),
+        }
+        
+        # 可选：先导出波形图片
+        image_path = Path(path).with_suffix('.png')
+        WaveformExporter.export_image_png(self._waveform, str(image_path), 1920, 1080)
+        
+        success = WaveformExporter.export_statistics_html(
+            stats,
+            path,
+            waveform_image_path=image_path.name
+        )
+        
+        if success:
+            QMessageBox.information(
+                self,
+                "Success",
+                f"统计报告已导出到:\n{path}\n\n"
+                f"波形图片: {image_path}"
+            )
+        else:
+            QMessageBox.critical(self, "Error", "导出报告失败")
+    
+    # ── V2.4: 回放功能 ──────────────────────────────────────
+    
+    def _show_playback_panel(self):
+        """显示回放控制面板"""
+        if self._playback_panel is None:
+            self._playback_panel = PlaybackPanel(self)
+            self._playback_panel.file_loaded.connect(self._on_playback_file_loaded)
+            self._playback_panel.playback_started.connect(self._on_playback_started)
+            self._playback_panel.playback_stopped.connect(self._on_playback_stopped)
+            
+            # 创建浮动窗口
+            self._playback_panel.setWindowTitle("数据回放")
+            self._playback_panel.setMinimumWidth(400)
+            self._playback_panel.setMinimumHeight(300)
+        
+        self._playback_panel.show()
+        self._playback_panel.raise_()
+        self._playback_panel.activateWindow()
+    
+    def _on_playback_file_loaded(self, info):
+        """回放文件加载完成"""
+        self._status_label.setText(f"回放文件已加载: {Path(info.path).name}")
+    
+    def _on_playback_started(self):
+        """回放开始"""
+        # 进入回放模式
+        self._playback_mode = True
+        
+        # 禁用串口连接
+        self._btn_connect.setEnabled(False)
+        
+        # 清空当前波形
+        self._waveform.clear()
+        
+        # 连接回放读取器的信号到波形显示
+        reader = self._playback_panel.get_reader()
+        if reader:
+            reader.frame_ready.connect(self._on_frame_ready)
+        
+        self._status_label.setText("回放中...")
+    
+    def _on_playback_stopped(self):
+        """回放停止"""
+        # 退出回放模式
+        self._playback_mode = False
+        
+        # 恢复串口连接按钮
+        self._btn_connect.setEnabled(True)
+        
+        # 断开回放信号
+        reader = self._playback_panel.get_reader()
+        if reader:
+            try:
+                reader.frame_ready.disconnect(self._on_frame_ready)
+            except:
+                pass
+        
+        self._status_label.setText("回放已停止")
 
     def closeEvent(self, event):
         self._save_settings()
