@@ -47,3 +47,9 @@ recordings/
 *.adcw
 *.bin
 *.csv
+*.meta.json
+
+# Qt settings (user preferences - don't commit)
+*.ini
+*.conf
+.config/
