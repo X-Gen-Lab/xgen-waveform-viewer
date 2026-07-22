@@ -1,0 +1,36 @@
+{
+  "protocol_type": "binary_custom",
+  "description": "自定义二进制协议示例 - 适用于多通道高速采集",
+  "frame_format": {
+    "sync_bytes": "AA55",
+    "meta_size": 8,
+    "has_crc": true,
+    "crc_size": 2,
+    "crc_poly": "0x1021",
+    "crc_init": "0xFFFF",
+    "sample_size": 2,
+    "endianness": "little",
+    "has_sequence": true,
+    "sequence_offset": 0,
+    "sequence_size": 4,
+    "has_channel_id": true,
+    "channel_id_offset": 4,
+    "sample_count_offset": 6,
+    "max_samples": 2048
+  },
+  "notes": [
+    "帧格式说明:",
+    "[0xAA][0x55] - 同步头 (2 bytes)",
+    "[SEQ:4B] - 序列号 (uint32 LE)",
+    "[CH:1B] - 通道 ID (uint8)",
+    "[RESERVED:1B] - 保留字节",
+    "[CNT:2B] - 采样点数 (uint16 LE)",
+    "[SAMPLES:CNT×2B] - 采样数据 (uint16 LE)",
+    "[CRC:2B] - CRC-16-CCITT (uint16 LE)",
+    "",
+    "使用场景:",
+    "- 多通道 ADC 采集",
+    "- 需要通道标识的场景",
+    "- 数据完整性要求高的应用"
+  ]
+}

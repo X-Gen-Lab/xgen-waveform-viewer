@@ -1,0 +1,39 @@
+{
+  "protocol_type": "binary_custom",
+  "description": "Modbus RTU 风格协议示例",
+  "frame_format": {
+    "sync_bytes": "",
+    "meta_size": 6,
+    "has_crc": true,
+    "crc_size": 2,
+    "crc_poly": "0xA001",
+    "crc_init": "0xFFFF",
+    "sample_size": 2,
+    "endianness": "big",
+    "has_sequence": false,
+    "has_channel_id": true,
+    "channel_id_offset": 0,
+    "sample_count_offset": 4,
+    "max_samples": 125
+  },
+  "notes": [
+    "类 Modbus RTU 帧格式:",
+    "[ADDR:1B] - 设备地址/通道 ID",
+    "[FUNC:1B] - 功能码 (固定为 0x04 读取输入寄存器)",
+    "[START:2B] - 起始地址 (big endian)",
+    "[CNT:2B] - 寄存器数量 (big endian)",
+    "[DATA:CNT×2B] - 数据 (big endian)",
+    "[CRC:2B] - CRC-16 Modbus (little endian)",
+    "",
+    "注意:",
+    "- 此示例仅作参考，实际 Modbus 协议需要完整实现",
+    "- CRC-16 使用 Modbus 专用多项式 0xA001",
+    "- 数据为大端序（big endian）",
+    "- CRC 为小端序（little endian）",
+    "",
+    "使用场景:",
+    "- 工业设备数据采集",
+    "- 兼容 Modbus 设备",
+    "- 需要设备地址的场景"
+  ]
+}

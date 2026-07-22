@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "xgen-waveform-viewer"
-version = "2.4.1"
-description = "A PyQt6 desktop viewer for real-time ADC waveform data over UART."
+version = "3.0.0"
+description = "Professional multi-channel ADC waveform viewer with custom protocol support and firmware management."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"

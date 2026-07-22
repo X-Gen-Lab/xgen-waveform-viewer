@@ -66,6 +66,13 @@ from .logger import init_logger, get_logger
 from .statistics_panel import StatisticsPanel
 from .playback_panel import PlaybackPanel
 from .exporter import WaveformExporter
+# V3.0: 多通道、协议、固件管理
+from .multi_channel import MultiChannelManager
+from .protocol import ProtocolFactory, ProtocolType, BinaryV2Parser
+from .firmware_config import FirmwareConfigManager
+from .channel_panel import ChannelPanel
+from .protocol_config_panel import ProtocolConfigPanel
+from .firmware_panel import FirmwarePanel
 
 
 class MainWindow(QMainWindow):
@@ -133,6 +140,18 @@ class MainWindow(QMainWindow):
         # V2.4: 回放控制面板
         self._playback_panel: PlaybackPanel | None = None
         self._playback_mode = False  # 是否处于回放模式
+        
+        # V3.0: 多通道管理
+        self._channel_manager = MultiChannelManager(self)
+        self._channel_panel: ChannelPanel | None = None
+        
+        # V3.0: 协议管理
+        self._protocol_parser = BinaryV2Parser()  # 默认使用 Binary V2
+        self._protocol_panel: ProtocolConfigPanel | None = None
+        
+        # V3.0: 固件配置管理
+        self._firmware_manager: FirmwareConfigManager | None = None
+        self._firmware_panel: FirmwarePanel | None = None
 
         self._setup_ui()
         self._setup_statusbar()
@@ -546,6 +565,28 @@ class MainWindow(QMainWindow):
         stats_action.setToolTip("显示性能和数据完整性统计")
         stats_action.triggered.connect(self._show_statistics_panel)
         view_menu.addAction(stats_action)
+        
+        # V3.0: 多通道面板
+        channel_action = QAction("&Channel Management", self)
+        channel_action.setShortcut(QKeySequence("Ctrl+H"))
+        channel_action.setToolTip("管理多通道配置")
+        channel_action.triggered.connect(self._show_channel_panel)
+        view_menu.addAction(channel_action)
+        
+        # V3.0: 工具菜单
+        tools_menu = menubar.addMenu("&Tools")
+        
+        # 协议配置
+        protocol_action = QAction("&Protocol Configuration", self)
+        protocol_action.setToolTip("配置数据传输协议")
+        protocol_action.triggered.connect(self._show_protocol_panel)
+        tools_menu.addAction(protocol_action)
+        
+        # 固件配置
+        firmware_action = QAction("&Firmware Configuration", self)
+        firmware_action.setToolTip("配置和更新固件")
+        firmware_action.triggered.connect(self._show_firmware_panel)
+        tools_menu.addAction(firmware_action)
         
         # 连接菜单
         conn_menu = menubar.addMenu("&Connection")
@@ -1806,3 +1847,83 @@ class MainWindow(QMainWindow):
         if self._reader.isRunning():
             self._disconnect()
         event.accept()
+
+    # ── V3.0 面板显示方法 ────────────────────────────────────
+
+    def _show_channel_panel(self):
+        """显示通道管理面板"""
+        if self._channel_panel is None:
+            self._channel_panel = ChannelPanel(self._channel_manager, self)
+            self._channel_panel.setWindowTitle("Channel Management")
+            self._channel_panel.resize(600, 400)
+            # 设置为独立窗口，避免叠加在主窗口上
+            self._channel_panel.setWindowFlags(Qt.WindowType.Window)
+        
+        self._channel_panel.show()
+        self._channel_panel.raise_()
+        self._channel_panel.activateWindow()
+
+    def _show_protocol_panel(self):
+        """显示协议配置面板"""
+        if self._protocol_panel is None:
+            self._protocol_panel = ProtocolConfigPanel(self)
+            self._protocol_panel.setWindowTitle("Protocol Configuration")
+            self._protocol_panel.resize(700, 500)
+            # 设置为独立窗口，避免叠加在主窗口上
+            self._protocol_panel.setWindowFlags(Qt.WindowType.Window)
+            # 连接协议变更信号
+            self._protocol_panel.protocol_changed.connect(self._on_protocol_changed)
+        
+        self._protocol_panel.show()
+        self._protocol_panel.raise_()
+        self._protocol_panel.activateWindow()
+
+    def _show_firmware_panel(self):
+        """显示固件配置面板"""
+        # 确保已连接串口
+        if not self._reader.is_connected:
+            QMessageBox.warning(
+                self,
+                "未连接",
+                "请先连接设备才能进行固件配置。"
+            )
+            return
+        
+        # 创建固件管理器（如果还未创建）
+        if self._firmware_manager is None:
+            try:
+                self._firmware_manager = FirmwareConfigManager(self._reader._serial, self)
+                self._logger.info("Firmware manager created", category="firmware")
+            except Exception as e:
+                QMessageBox.critical(
+                    self,
+                    "错误",
+                    f"无法创建固件管理器:\n{e}"
+                )
+                return
+        
+        # 创建固件面板（如果还未创建）
+        if self._firmware_panel is None:
+            self._firmware_panel = FirmwarePanel(self._firmware_manager, self)
+            self._firmware_panel.setWindowTitle("Firmware Configuration")
+            self._firmware_panel.resize(700, 600)
+            # 设置为独立窗口，避免叠加在主窗口上
+            self._firmware_panel.setWindowFlags(Qt.WindowType.Window)
+        else:
+            # 更新固件管理器
+            self._firmware_panel.set_config_manager(self._firmware_manager)
+        
+        self._firmware_panel.show()
+        self._firmware_panel.raise_()
+        self._firmware_panel.activateWindow()
+
+    def _on_protocol_changed(self, parser):
+        """协议变更事件"""
+        self._protocol_parser = parser
+        self._logger.info(f"Protocol changed to {type(parser).__name__}", category="protocol")
+        QMessageBox.information(
+            self,
+            "协议已更新",
+            f"数据传输协议已更新为: {type(parser).__name__}\n"
+            "重新连接后生效。"
+        )

@@ -5,6 +5,205 @@ All notable changes to xgen-waveform-viewer will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.0.0] - 2026-07-22
+
+### Added - Multi-Channel Support 🎉
+- **Multi-Channel Data Model**: Complete rewrite to support up to 16 independent ADC channels
+  - `MultiChannelManager` class for channel lifecycle management
+  - `ChannelConfig` dataclass for per-channel configuration
+  - `ChannelData` dataclass for per-channel buffering
+  - Independent sample buffers, timestamps, and sequence tracking per channel
+  - Automatic color assignment from predefined palette
+- **Channel Management UI**: Professional channel configuration panel
+  - Visual channel list with editable labels, colors, and visibility
+  - Channel grouping for logical organization
+  - Per-channel Y-axis offset and scaling
+  - Real-time channel statistics display
+  - Configuration save/load with JSON serialization
+- **Multi-Channel Display**: Enhanced visualization
+  - Overlay mode: All channels on same Y-axis
+  - Stacked mode: Separate Y-axis regions per channel
+  - Configurable channel colors for easy identification
+  - Show/hide channels without data loss
+  - Per-channel memory management with configurable limits
+
+### Added - Protocol Extension Framework 🔧
+- **Protocol Parser Architecture**: Flexible protocol handling system
+  - Abstract `ProtocolParser` base class
+  - `ProtocolFactory` for dynamic parser creation
+  - Support for Binary V2 (default), Binary Custom, and ASCII protocols
+  - Plugin-style protocol loading from JSON configuration files
+- **Binary Custom Protocol**: User-defined binary frame formats
+  - `FrameFormat` dataclass for complete frame specification
+  - Configurable sync bytes, metadata layout, CRC parameters
+  - Support for multiple endianness (little/big)
+  - Optional sequence numbers and channel IDs
+  - Variable sample sizes (1, 2, 4 bytes)
+  - Maximum 4096 samples per frame
+- **ASCII Text Protocol**: Human-readable data support
+  - CSV format with configurable delimiters
+  - Optional channel prefix (e.g., `#CH0:1234,5678`)
+  - Multiple line terminator support (LF, CRLF, CR)
+  - Automatic integer/float parsing
+  - Ideal for debugging and simple devices
+- **Protocol Configuration UI**: Visual protocol editor
+  - Tab-based interface for different protocol types
+  - Real-time parameter validation
+  - Import/export protocol configurations as JSON
+  - Protocol switching without code changes
+  - Built-in examples and templates
+
+### Added - Firmware Configuration & OTA 🚀
+- **Firmware Version Management**: Comprehensive version tracking
+  - `FirmwareVersion` dataclass with semantic versioning
+  - Git commit hash and build date tracking
+  - Version compatibility checking
+  - Automatic upgrade recommendations
+- **Firmware Configuration**: Remote parameter management
+  - Sampling rate configuration (100 Hz - 1 MHz)
+  - Frame length adjustment (1 - 4096 samples)
+  - Multi-channel configuration (up to 16 channels)
+  - Channel mask for selective channel enabling
+  - ADC resolution and reference voltage settings
+  - Hardware trigger configuration (level, edge, enable)
+- **Firmware Command Protocol**: Bidirectional communication
+  - Custom command frame format (0xFC 0xCF sync)
+  - CRC-16 validation for command integrity
+  - 14 command types including version query, config set/get, OTA
+  - Response handling with timeout management
+  - Structured error reporting
+- **OTA Firmware Update**: Safe over-the-air updates
+  - Chunked firmware transmission (256-byte blocks)
+  - Real-time progress reporting
+  - Automatic firmware verification
+  - Update failure recovery with rollback
+  - Bootloader entry support
+  - Warning dialogs for safety
+- **Firmware Configuration UI**: User-friendly management panel
+  - Version information display with details
+  - Configuration parameter editor
+  - One-click firmware file selection
+  - Progress bar for OTA updates
+  - Operation log viewer
+  - Device reset and bootloader controls
+
+### Changed
+- **Version**: Updated to V3.0.0 (major milestone release)
+- **Architecture**: Refactored core data flow to support multi-channel
+- **API**: Extended APIs to accept channel_id parameters
+- **Dependencies**: No new required dependencies (all features in core)
+- **Configuration**: Extended settings with multi-channel and protocol sections
+- **Documentation**: Comprehensive V3.0 release notes and quick start guide
+
+### Technical Details - New Modules
+- **`multi_channel.py`**: Multi-channel data management (455 lines)
+  - `ChannelConfig`: Channel metadata and display properties
+  - `ChannelData`: Per-channel sample buffer with timestamps
+  - `MultiChannelManager`: Channel lifecycle and configuration management
+- **`protocol.py`**: Protocol parsing framework (570 lines)
+  - `ProtocolParser`: Abstract base class for parsers
+  - `BinaryV2Parser`: Default protocol (backward compatible)
+  - `CustomBinaryParser`: User-defined binary protocols
+  - `ASCIIParser`: Text-based protocol support
+  - `ProtocolFactory`: Parser instantiation and configuration
+  - `FrameFormat`: Binary frame specification
+  - `ParsedFrame`: Unified parsing result
+- **`firmware_config.py`**: Firmware management (450 lines)
+  - `FirmwareConfigManager`: Command interface to firmware
+  - `FirmwareVersion`: Version information structure
+  - `FirmwareConfig`: Complete configuration parameters
+  - `FirmwareCommandType`: Command enumeration
+  - `check_firmware_compatibility()`: Version validation
+- **`channel_panel.py`**: Channel management UI (280 lines)
+  - `ChannelPanel`: Main channel list and controls
+  - `ColorButton`: Custom color picker widget
+- **`protocol_config_panel.py`**: Protocol configuration UI (350 lines)
+  - `ProtocolConfigPanel`: Multi-tab protocol editor
+  - Protocol-specific configuration forms
+  - Import/export functionality
+- **`firmware_panel.py`**: Firmware management UI (400 lines)
+  - `FirmwarePanel`: Version, config, and OTA interface
+  - Real-time progress tracking
+  - Operation logging display
+
+### API Changes
+- **Multi-Channel APIs**:
+  - `MultiChannelManager.add_channel(channel_id, label, color)`: Create channel
+  - `MultiChannelManager.append_data(channel_id, samples, seq, timestamp)`: Add data
+  - `MultiChannelManager.get_channel_config(channel_id)`: Query configuration
+  - `MultiChannelManager.update_channel_config(channel_id, **kwargs)`: Modify settings
+  - `MultiChannelManager.save_config()` / `load_config()`: Persistence
+- **Protocol APIs**:
+  - `ProtocolFactory.create_parser(protocol_type, config)`: Create parser
+  - `ProtocolFactory.load_from_file(filepath)`: Load from JSON
+  - `ProtocolParser.parse_frame(data)`: Parse single frame
+  - `ProtocolParser.find_sync(buffer)`: Locate sync header
+  - `ProtocolParser.validate_frame(data)`: Check integrity
+- **Firmware APIs**:
+  - `FirmwareConfigManager.get_firmware_version()`: Query version
+  - `FirmwareConfigManager.get/set_firmware_config()`: Config operations
+  - `FirmwareConfigManager.set_sample_rate(rate)`: Configure sampling
+  - `FirmwareConfigManager.ota_update(firmware_data)`: Update firmware
+  - Signal-based response handling (async pattern)
+
+### Configuration
+New configuration sections and keys:
+- `multi_channel/*`: Channel definitions and display settings
+- `protocol/type`: Active protocol type
+- `protocol/custom_config`: Custom protocol parameters
+- `firmware/min_version`: Minimum compatible firmware version
+- `firmware/check_on_connect`: Auto version check
+- `ota/chunk_size`: OTA transfer chunk size
+- `ota/verify_on_complete`: Post-update verification
+
+### Documentation & Examples 📚
+- **Release Notes**: Comprehensive V3.0 feature documentation (1500+ lines)
+- **Quick Start Guide**: Step-by-step tutorials for new features
+- **Example Scripts**:
+  - `v3.0_multi_channel_example.py`: Multi-channel demo with 4 simulated channels
+  - `v3.0_custom_protocol_example.py`: Protocol configuration examples
+  - `v3.0_firmware_config_example.py`: Firmware management examples
+- **Protocol Templates**: Ready-to-use JSON configurations
+  - `binary_custom_example.json`: Multi-channel custom binary
+  - `ascii_example.json`: CSV and prefixed text protocols
+  - `modbus_rtu_example.json`: Modbus-style protocol template
+
+### Backward Compatibility ✅
+- **Binary V2 Protocol**: Remains the default, fully compatible
+- **Single Channel Mode**: Works as before (channel 0)
+- **Existing Recordings**: Can still be loaded and played back
+- **Configuration Migration**: Automatic upgrade from V2.x settings
+- **Firmware Interop**: V3.0 software works with V2.x firmware (limited features)
+
+### Performance Optimizations ⚡
+- **Per-Channel Buffering**: Reduced memory fragmentation
+- **Lazy Rendering**: Only visible channels are drawn
+- **Protocol Dispatch**: Zero-copy parsing where possible
+- **Firmware Commands**: Async with 2-second timeout
+- **OTA Throughput**: Optimized for high baud rates (921600+)
+
+### Known Limitations ⚠️
+- Maximum 16 channels (hardware/display constraint)
+- OTA update requires continuous connection (no resume)
+- TCP/UDP data sources not yet implemented (planned V3.1)
+- Firmware config requires V3.0+ firmware
+
+### Migration Guide
+For users upgrading from V2.x:
+1. **Settings**: Backup `~/.xgen-waveform-viewer/` before upgrade
+2. **Firmware**: Update to V3.0 firmware for full feature access
+3. **Protocols**: Default Binary V2 continues to work
+4. **Channels**: Single-channel mode is automatic (no action needed)
+5. **Recordings**: Old files remain compatible
+
+### Security Notes 🔒
+- OTA firmware is not encrypted (use trusted sources only)
+- Firmware commands use CRC-16 (not cryptographically secure)
+- Configuration files are plain JSON (sensitive data may be visible)
+- Serial connection has no authentication
+
+---
+
 ## [2.4.1] - 2025-01-22
 
 ### Fixed - UX Completeness
